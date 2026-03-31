@@ -1,0 +1,69 @@
+name: customer-support-ai-env
+version: "1.0.0"
+description: >
+  An OpenEnv-compatible reinforcement learning environment that simulates
+  a real-world customer support system. An AI agent interacts with incoming
+  customer queries and learns to respond appropriately through step-by-step
+  actions including classification, resolution, escalation, and closure.
+
+author: vsrupeshkumar
+license: MIT
+
+# Environment interface
+interface:
+  reset: "reset(scenario_index: Optional[int] = None) -> Dict"
+  step: "step(action: str) -> Tuple[Dict, float, bool, Dict]"
+  state: "state() -> Dict"
+
+# Available actions
+actions:
+  - classify_issue
+  - respond_with_solution
+  - ask_for_more_info
+  - escalate_to_human
+  - mark_resolved
+
+# Issue categories handled by the environment
+issue_types:
+  - payment_failure
+  - delayed_delivery
+  - refund_request
+  - account_issue
+
+# Defined evaluation tasks
+tasks:
+  - id: task_1_easy
+    name: Issue Classification
+    difficulty: easy
+    scenario_index: 0
+    max_steps: 3
+    pass_threshold: 0.5
+
+  - id: task_2_medium
+    name: Action Selection
+    difficulty: medium
+    scenario_index: 3
+    max_steps: 5
+    pass_threshold: 0.6
+
+  - id: task_3_hard
+    name: End-to-End Conversation
+    difficulty: hard
+    scenario_index: 5
+    max_steps: 7
+    pass_threshold: 0.7
+
+# Resource requirements
+resources:
+  cpu: 2
+  memory_gb: 8
+  max_execution_minutes: 20
+
+# Entry point for baseline evaluation
+entrypoint: python inference.py
+
+# Deployment target
+deployment:
+  platform: huggingface_spaces
+  runtime: python3.10
+  dockerfile: Dockerfile

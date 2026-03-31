@@ -1,0 +1,13 @@
+# No external dependencies required – the project uses only the Python standard library.
+# Listed below for completeness and future extensibility.
+
+# Core library (standard library only – no pip install needed for basic usage)
+# Uncomment if you add NLP features later:
+# transformers>=4.30.0
+# torch>=2.0.0
+
+# Optional: for YAML parsing if extending openenv.yaml loading
+PyYAML>=6.0
+
+# Optional: for enhanced output formatting
+colorama>=0.4.6
