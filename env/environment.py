@@ -40,7 +40,7 @@ from env.models import (
     ZoneDispatch,
     ZoneState,
 )
-from env.reward import compute_reward
+from env.reward import compute_reward, calculate_step_reward
 from env.tasks import Task, create_task
 
 # ---------------------------------------------------------------------------
@@ -175,7 +175,8 @@ class CrisisManagementEnv:
         self._lives_saved: int = 0
         self._total_reward: float = 0.0
         self._is_done: bool = False
-        self.obs: Observation  # set by reset()
+        self.obs: Observation           # set by reset()
+        self._prev_obs: Optional[Observation] = None  # Blocker #3: temporal shaping
 
         self.reset(seed=seed)
         logger.info("CrisisManagementEnv successfully booted locally against Task %d.", task_id)
@@ -238,7 +239,8 @@ class CrisisManagementEnv:
         self._resolved_incidents = 0
         self._lives_saved = 0
         self._total_incidents = self._count_incidents(self.obs)
-        self._wasted_dispatches: int = 0  # Tracks over-allocation events for grader.
+        self._wasted_dispatches: int = 0  # Blocker #2: tracks over-allocation events for grader.
+        self._prev_obs: Optional[Observation] = None  # Blocker #3: temporal shaping anchor
 
         logger.debug("Environment reset.  Total incidents: %d.", self._total_incidents)
         return self.obs.model_copy(deep=True)
@@ -269,22 +271,42 @@ class CrisisManagementEnv:
             )
 
         # 1. Advance time and recover returned units.
+        # Blocker #3: snapshot previous obs BEFORE the tick so temporal
+        # shaping in calculate_step_reward receives a genuinely distinct prior.
+        prev_obs_snapshot: Observation = self.obs.model_copy(deep=True)
+
         self.obs.step += 1
         self._active_deployments = _LifecycleManager.tick(
             self.obs, self._active_deployments
         )
 
         # 2. Compute reward *before* resolving zones (uses pre-action state).
-        reward, _ = compute_reward(action, self.obs)
+        # Blocker #3: pass distinct previous_state to unlock temporal shaping.
+        reward = calculate_step_reward(
+            current_state=self.obs,
+            action=action,
+            previous_state=prev_obs_snapshot,
+        )
         self._total_reward += reward
 
         # 3. Commit allocations and resolve each zone.
+        # Track over-allocations for Blocker #2 grader accuracy.
         for zone_id, zone_state in self.obs.zones.items():
             dispatch = action.allocations.get(zone_id, ZoneDispatch())
             used_fire, used_amb, used_pol = self._commit_allocation(
                 zone_id, zone_state, dispatch
             )
             self._resolve_zone(zone_id, zone_state, used_fire, used_amb, used_pol)
+
+            # Blocker #2: count over-allocation events (D > R for any resource).
+            from env.reward import _get_required_fire, _get_required_ambulance
+            req_f = _get_required_fire(zone_state.fire, self.obs.weather)
+            req_a = _get_required_ambulance(zone_state.patient)
+            if dispatch.dispatch_fire > req_f or dispatch.dispatch_ambulance > req_a:
+                self._wasted_dispatches += 1
+
+        # Advance temporal shaping anchor.
+        self._prev_obs = prev_obs_snapshot
 
         # 4. Determine episode termination.
         all_clear = all(
@@ -297,17 +319,23 @@ class CrisisManagementEnv:
             self._is_done = True
             logger.info("Evaluation Terminated natively. Executing Scorecard hook.")
 
-        # 5. Build info dict.
+        # 5. Build info dict — Blocker #2: all three grader components now live.
         from env.grader import Grader  # local import avoids circular deps at module level
 
         score, eff_score = Grader().get_score(
-            self._resolved_incidents, self._total_incidents, self._total_reward
+            incidents_resolved=self._resolved_incidents,
+            total_incidents=self._total_incidents,
+            total_reward=self._total_reward,
+            total_steps=max(self.obs.step, 1),
+            num_zones=len(self.obs.zones),
+            wasted_dispatches=self._wasted_dispatches,
         )
         info: Dict[str, Any] = {
             "resolved": self._resolved_incidents,
             "total": self._total_incidents,
             "score": score,
             "efficiency": eff_score,
+            "wasted_dispatches": self._wasted_dispatches,
         }
 
         return self.obs.model_copy(deep=True), float(reward), self._is_done, info
@@ -325,8 +353,14 @@ class CrisisManagementEnv:
         """
         from env.grader import Grader  # local import avoids circular deps at module level
 
+        # Blocker #2: pass all three grader components for accurate resource_usage.
         score, eff_score = Grader().get_score(
-            self._resolved_incidents, self._total_incidents, self._total_reward
+            incidents_resolved=self._resolved_incidents,
+            total_incidents=self._total_incidents,
+            total_reward=self._total_reward,
+            total_steps=max(self.obs.step, 1),
+            num_zones=len(self.obs.zones),
+            wasted_dispatches=self._wasted_dispatches,
         )
         return EnvironmentState(
             step_count=self.obs.step,
@@ -335,7 +369,11 @@ class CrisisManagementEnv:
             total_reward=self._total_reward,
             is_done=self._is_done,
             success=(self._resolved_incidents == self._total_incidents),
-            metrics={"efficiency": eff_score, "lives_saved": float(self._lives_saved)},
+            metrics={
+                "efficiency": eff_score,
+                "lives_saved": float(self._lives_saved),
+                "wasted_dispatches": float(self._wasted_dispatches),
+            },
         )
 
     # ------------------------------------------------------------------
