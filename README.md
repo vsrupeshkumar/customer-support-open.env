@@ -18,7 +18,7 @@ We completely outgrew simple binary tasks. The environment implements the follow
 3. A `Dockerfile` mapping `0.0.0.0:7860` handles Hugging Face Space deployments natively.
 4. Python `openai` explicitly points to `os.getenv("HF_TOKEN")` mapping natively to OpenRouter LLaMA integration arrays.
 
-###  Quick Start Validation
+#  Quick Start Validation
 ```bash
 pip install -r requirements.txt
 python inference.py --agent baseline
