@@ -3,22 +3,25 @@ env/tasks.py
 ============
 Task registry for the Adaptive Crisis Management Environment.
 
-Determinism Guarantee
----------------------
-Every ``Task.generate_initial_observation(seed=N)`` call with the **same**
-integer seed must produce the **identical** ``Observation`` object, byte for
-byte, every single time — regardless of the Python interpreter state, import
-order, or prior calls.
+Monolithic Entropy Lock — Determinism Contract
+----------------------------------------------
+Every ``Task.generate_initial_observation(rng)`` call with the **same**
+seeded ``random.Random`` instance must produce the **identical** ``Observation``
+object, byte for byte.
 
 Implementation contract
 -----------------------
-* Each ``Task`` subclass receives a ``seed`` parameter in
-  ``generate_initial_observation``.
-* The method must construct a ``random.Random(seed)`` instance internally
-  and use **only** that seeded instance for any random choice.
-* It must **not** call the module-level ``random.random()`` or
-  ``numpy.random.*`` functions directly (those are global and would break
-  isolation).
+* The environment's ``reset()`` method owns exactly **one** ``random.Random``
+  instance (``self._rng``) seeded at episode start.
+* That single instance is passed **directly** into ``generate_initial_observation``
+  as the ``rng`` parameter — no new ``random.Random`` object is ever constructed
+  inside a Task.  This means:**
+    - There is exactly ONE PRNG object per episode.
+    - Parallel evaluator instances cannot corrupt each other's PRNG state.
+    - The MDP transition function P(s'|s,a) is completely stationary.
+* The method must **not** call the module-level ``random.random()``,
+  ``random.seed()``, ``numpy.random.*``, or ``np.random.*`` functions directly
+  (those are global and would break isolation).
 * The ``TaskLevel`` field on the returned ``Observation`` tracks difficulty.
 
 Current task roster
@@ -31,9 +34,6 @@ Task 3 — HardTask   : "City-Wide Meta Triage"
 from __future__ import annotations
 
 import random
-from typing import Optional
-
-import numpy as np  # noqa: F401  (imported for completeness; seeding is local)
 
 from env.models import (
     FireLevel,
@@ -52,19 +52,35 @@ from env.models import (
 # ---------------------------------------------------------------------------
 
 class Task:
-    """Abstract base for all task definitions."""
+    """Abstract base for all task definitions.
+
+    The Monolithic Entropy Lock contract requires that every concrete subclass
+    accepts the environment's pre-seeded ``random.Random`` instance directly
+    in ``generate_initial_observation``.  Subclasses must not construct their
+    own RNG objects.
+    """
 
     task_id: int = 0
     name: str = "unnamed"
 
-    def generate_initial_observation(self, seed: Optional[int] = 42) -> Observation:
+    def generate_initial_observation(self, rng: random.Random) -> Observation:
         """Return the deterministic starting observation for this task.
 
+        Monolithic Entropy Lock
+        -----------------------
+        The caller (``CrisisManagementEnv.reset()``) owns the single seeded
+        ``random.Random`` instance that governs this entire episode.  It is
+        passed here directly so that all draws in this method advance the
+        **same** PRNG state, guaranteeing:
+
+        1. Identical output for the same seed across all Python environments.
+        2. Zero global-state side-effects — concurrent instances cannot
+           interfere with each other.
+        3. A single, auditable random-draw sequence per episode.
+
         Args:
-            seed: Integer seed that fully determines every random choice made
-                  during incident generation.  The *same* seed must always
-                  produce the *same* ``Observation``.  Defaults to 42 so
-                  unseeded calls are still fully deterministic.
+            rng: The environment instance's pre-seeded ``random.Random``
+                 object.  All random draws **must** use this object.
 
         Returns:
             A freshly constructed ``Observation`` for the beginning of an
@@ -85,7 +101,7 @@ class EasyTask(Task):
 
     Deterministic generation
     ------------------------
-    When ``seed`` is provided a seeded ``random.Random`` instance draws:
+    When ``rng`` is provided a seeded ``random.Random`` instance draws:
 
     * Whether a second zone might receive a minor traffic incident (the draw
       keeps the scenario deterministic across seeds).
@@ -105,23 +121,24 @@ class EasyTask(Task):
     _IDLE_POLICE = 3
     _MAX_STEPS   = 8
 
-    def generate_initial_observation(self, seed: Optional[int] = 42) -> Observation:
+    def generate_initial_observation(self, rng: random.Random) -> Observation:
         """Generate the deterministic Task 1 starting state.
 
-        The RNG is seeded locally — it does NOT touch the global
-        ``random`` module state, ensuring full isolation.
+        Monolithic Entropy Lock
+        -----------------------
+        Uses the environment's pre-seeded ``random.Random`` instance (``rng``)
+        directly.  No new RNG is constructed here — there is exactly one PRNG
+        per episode, owned by ``CrisisManagementEnv.reset()``.
 
         Args:
-            seed: Reproducibility seed.  Defaults to 42 — fully deterministic
-                  even when called without an explicit seed argument.
+            rng: The environment's instance-bound seeded ``random.Random``.
+                 All random draws use this object to advance a single,
+                 shared PRNG state.
 
         Returns:
             Observation for a single Downtown fire under clear skies.
         """
-        # ---------- Seeded local RNG (isolation!) --------------------------
-        rng = random.Random(seed)  # Completely isolated — no global side-effects.
-
-        # ---------- Incident generation (seed-locked) ----------------------
+        # ---------- Incident generation (rng-locked) -----------------------
         # Downtown always has a MEDIUM fire in Task 1.
         downtown_fire = FireLevel.MEDIUM
 
@@ -192,18 +209,20 @@ class MediumTask(Task):
     _PAT_POOL   = [PatientLevel.MODERATE, PatientLevel.CRITICAL]
     _PAT_WTS    = [0.60, 0.40]
 
-    def generate_initial_observation(self, seed: Optional[int] = 42) -> Observation:
+    def generate_initial_observation(self, rng: random.Random) -> Observation:
         """Generate the deterministic Task 2 starting state.
 
+        Monolithic Entropy Lock
+        -----------------------
+        Uses the environment's pre-seeded ``random.Random`` instance (``rng``)
+        directly.  No new RNG is constructed here.
+
         Args:
-            seed: Reproducibility seed.  Defaults to 42 — fully deterministic
-                  even when called without an explicit seed argument.
+            rng: The environment's instance-bound seeded ``random.Random``.
 
         Returns:
             Observation with multi-zone incidents under STORM weather.
         """
-        rng = random.Random(seed)
-
         # Draw fire level from weighted pool.
         suburbs_fire: FireLevel = rng.choices(
             self._FIRE_POOL, weights=self._FIRE_WTS, k=1
@@ -277,18 +296,20 @@ class HardTask(Task):
     _SUB_PAT_POOL = [PatientLevel.CRITICAL, PatientLevel.MODERATE]
     _SUB_PAT_WTS  = [0.70, 0.30]
 
-    def generate_initial_observation(self, seed: Optional[int] = 42) -> Observation:
+    def generate_initial_observation(self, rng: random.Random) -> Observation:
         """Generate the deterministic Task 3 starting state.
 
+        Monolithic Entropy Lock
+        -----------------------
+        Uses the environment's pre-seeded ``random.Random`` instance (``rng``)
+        directly.  No new RNG is constructed here.
+
         Args:
-            seed: Reproducibility seed.  Defaults to 42 — fully deterministic
-                  even when called without an explicit seed argument.
+            rng: The environment's instance-bound seeded ``random.Random``.
 
         Returns:
             Observation with city-wide multi-zone incidents under HURRICANE.
         """
-        rng = random.Random(seed)
-
         downtown_fire: FireLevel = rng.choices(
             self._DT_FIRE_POOL, weights=self._DT_FIRE_WTS, k=1
         )[0]

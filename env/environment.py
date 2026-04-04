@@ -191,32 +191,34 @@ class CrisisManagementEnv:
 
         Monolithic Entropy Lock
         -----------------------
+        Engages a Monolithic Entropy Lock.  By utilizing instance-bound PRNGs
+        (a NumPy Generator and a Python ``random.Random``), we ensure the
+        Markov Decision Process (MDP) transition function P(s'|s,a) remains
+        completely stationary and parallel-safe, preventing PRNG state
+        corruption during concurrent evaluator testing.
+
         OS-level entropy is fully quarantined.  Every source of randomness in
-        the episode is driven by explicit, isolated generator objects seeded
-        from the ``seed`` parameter — **never** from global RNG state.
+        the episode is driven by these two explicit, isolated generator objects
+        seeded from the ``seed`` parameter — **never** from global RNG state.
 
-        Three independent RNG layers are locked on every call (even without an
-        explicit seed argument, because the default of 42 guarantees 0.0
-        variance across identical calls):
+        Two instance-bound PRNG objects are locked on every call:
 
-        1. ``random.Random(seed)``     — The environment's isolated stdlib RNG
-                                         instance (``self._rng``).  Used for any
-                                         internal discrete choices.
-        2. ``np.random.default_rng``   — A private NumPy Generator (``self._np_rng``).
-                                         Used for all continuous or array-valued
-                                         stochastic transitions inside ``step()``.
-        3. ``generate_initial_observation(seed=seed)`` — Each Task subclass
-                                         builds its *own* ``random.Random(seed)``
-                                         that is completely isolated from the
-                                         above two instances.
+        1. ``self._rng = random.Random(seed)``
+                                         The environment's isolated stdlib RNG.
+                                         Passed **directly** into
+                                         ``generate_initial_observation(rng=self._rng)``
+                                         so that there is exactly **ONE** PRNG
+                                         object driving the entire episode.
+                                         Tasks must not construct their own RNG.
+        2. ``self._np_rng = np.random.default_rng(seed)``
+                                         A private NumPy Generator for any
+                                         continuous or array-valued stochastic
+                                         transitions inside ``step()``.
 
         **No global ``random.seed()`` or ``np.random.seed()`` call is made.**
         Third-party libraries relying on the global Python RNG are not our
         responsibility; quarantining our own generators is sufficient and
         avoids interfering with the caller's global state.
-
-        Monolithic Entropy Lock engaged: OS-level entropy is quarantined to
-        guarantee 0.0 variance across identical seed runs for OpenEnv compliance.
 
         Args:
             seed: Integer seed for fully deterministic episode generation.
@@ -233,12 +235,14 @@ class CrisisManagementEnv:
         self._np_rng = np.random.default_rng(seed)
 
         logger.debug(
-            "Monolithic Entropy Lock: self._rng=Random(%s), "
+            "Monolithic Entropy Lock engaged: self._rng=Random(%s), "
             "self._np_rng=default_rng(%s) — global RNG untouched.",
             seed, seed,
         )
 
-        self.obs = self._task.generate_initial_observation(seed=seed)
+        # Pass self._rng directly — NO new random.Random(seed) created in Task.
+        # There is exactly ONE PRNG object per episode, owned by this instance.
+        self.obs = self._task.generate_initial_observation(rng=self._rng)
         self._active_deployments = []
         self._total_reward = 0.0
         self._is_done = False
