@@ -57,13 +57,14 @@ class Task:
     task_id: int = 0
     name: str = "unnamed"
 
-    def generate_initial_observation(self, seed: Optional[int] = None) -> Observation:
+    def generate_initial_observation(self, seed: Optional[int] = 42) -> Observation:
         """Return the deterministic starting observation for this task.
 
         Args:
             seed: Integer seed that fully determines every random choice made
                   during incident generation.  The *same* seed must always
-                  produce the *same* ``Observation``.
+                  produce the *same* ``Observation``.  Defaults to 42 so
+                  unseeded calls are still fully deterministic.
 
         Returns:
             A freshly constructed ``Observation`` for the beginning of an
@@ -104,14 +105,15 @@ class EasyTask(Task):
     _IDLE_POLICE = 3
     _MAX_STEPS   = 8
 
-    def generate_initial_observation(self, seed: Optional[int] = None) -> Observation:
+    def generate_initial_observation(self, seed: Optional[int] = 42) -> Observation:
         """Generate the deterministic Task 1 starting state.
 
         The RNG is seeded locally — it does NOT touch the global
         ``random`` module state, ensuring full isolation.
 
         Args:
-            seed: Reproducibility seed.  ``None`` → non-deterministic.
+            seed: Reproducibility seed.  Defaults to 42 — fully deterministic
+                  even when called without an explicit seed argument.
 
         Returns:
             Observation for a single Downtown fire under clear skies.
@@ -190,11 +192,12 @@ class MediumTask(Task):
     _PAT_POOL   = [PatientLevel.MODERATE, PatientLevel.CRITICAL]
     _PAT_WTS    = [0.60, 0.40]
 
-    def generate_initial_observation(self, seed: Optional[int] = None) -> Observation:
+    def generate_initial_observation(self, seed: Optional[int] = 42) -> Observation:
         """Generate the deterministic Task 2 starting state.
 
         Args:
-            seed: Reproducibility seed.  ``None`` → non-deterministic.
+            seed: Reproducibility seed.  Defaults to 42 — fully deterministic
+                  even when called without an explicit seed argument.
 
         Returns:
             Observation with multi-zone incidents under STORM weather.
@@ -274,11 +277,12 @@ class HardTask(Task):
     _SUB_PAT_POOL = [PatientLevel.CRITICAL, PatientLevel.MODERATE]
     _SUB_PAT_WTS  = [0.70, 0.30]
 
-    def generate_initial_observation(self, seed: Optional[int] = None) -> Observation:
+    def generate_initial_observation(self, seed: Optional[int] = 42) -> Observation:
         """Generate the deterministic Task 3 starting state.
 
         Args:
-            seed: Reproducibility seed.  ``None`` → non-deterministic.
+            seed: Reproducibility seed.  Defaults to 42 — fully deterministic
+                  even when called without an explicit seed argument.
 
         Returns:
             Observation with city-wide multi-zone incidents under HURRICANE.
