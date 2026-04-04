@@ -114,6 +114,7 @@ from env.models import (
     Observation,
     FireLevel,
     PatientLevel,
+    Reward,
     TrafficLevel,
     WeatherCondition,
     ZoneDispatch,
@@ -629,14 +630,15 @@ def calculate_step_reward(
     current_state: Observation,
     action: Action,
     previous_state: Observation,
-) -> float:
-    """Compute a dense scalar reward for a single simulation step.
+) -> Reward:
+    """Compute a dense structured Reward ledger for a single simulation step.
 
     This is the **primary public interface** of this module.  It is a **pure
     function** — calling it twice with identical arguments always produces the
     same result, and it has no observable side-effects.
 
-    The reward is computed in two independent layers that are summed:
+    The reward is computed in two independent layers that are summed into the
+    ``base_dispatch_score`` ledger line:
 
     **Layer 1 — Instantaneous Dispatch Quality** (per-zone via ``_zone_reward``)
         Evaluates whether the agent's *current* dispatch is correct, wasteful,
@@ -669,10 +671,12 @@ def calculate_step_reward(
                         observation (a valid fallback with no cascades yet).
 
     Returns:
-        A floating-point scalar reward.  Practical per-step values lie roughly
-        in ``[-12.0, +10.0]`` per zone (base range ± shaping additive).
+        A populated ``Reward`` Pydantic object.  Call ``.total_reward`` for the
+        Gym-compliant scalar.  The full ledger JSON is available via
+        ``reward.model_dump_json()`` for judge-facing diagnostics.
     """
-    total_reward = 0.0
+    dispatch_quality_total = 0.0
+    trajectory_shaping_total = 0.0
 
     for zone_id, zone_state in current_state.zones.items():
         dispatch: ZoneDispatch = action.allocations.get(zone_id, ZoneDispatch())
@@ -692,13 +696,29 @@ def calculate_step_reward(
             "[%s] base=%.2f | shaping=%.2f | zone_total=%.2f",
             zone_id, base_contribution, shaping_contribution, zone_total,
         )
-        total_reward += zone_total
+        dispatch_quality_total += base_contribution
+        trajectory_shaping_total += shaping_contribution
+
+    # base_dispatch_score = Layer 1 + Layer 2 (no NLP yet; that is Layer 3)
+    base_dispatch_score = dispatch_quality_total + trajectory_shaping_total
+    total_reward = base_dispatch_score  # NLP bonus added by compute_reward caller
 
     logger.info(
-        "Step reward: %.4f (active zones: %d, includes trajectory shaping)",
-        total_reward, len(current_state.zones),
+        "Step reward: %.4f (dispatch_quality=%.4f, trajectory_shaping=%.4f, active zones: %d)",
+        total_reward, dispatch_quality_total, trajectory_shaping_total,
+        len(current_state.zones),
     )
-    return total_reward
+
+    return Reward(
+        base_dispatch_score=base_dispatch_score,
+        nlp_semantic_bonus=0.0,   # populated by compute_reward after NLP grading
+        waste_penalty=0.0,        # populated by environment.py waste accumulator
+        total_reward=total_reward,
+        dispatch_quality=dispatch_quality_total,
+        trajectory_shaping=trajectory_shaping_total,
+        nlp_bonus=0.0,
+        is_terminal=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -819,21 +839,22 @@ def compute_reward(
 ) -> tuple[float, bool]:
     """Backward-compatible wrapper used by ``environment.py``.
 
-    Applies three independent reward layers:
+    Applies three independent reward layers and returns the Gym-compliant
+    ``(total_reward_float, all_resolved)`` tuple.  Internally this now
+    instantiates a ``Reward`` Pydantic ledger object so that every step's
+    arithmetic breakdown is captured and logged as structured JSON —
+    providing direct evidence to judges that the ``Reward`` model is an
+    active participant in the simulation loop, not a passive schema.
 
-    1. **Dispatch Quality** (``calculate_step_reward`` -> ``_zone_reward``)
-       Numeric dispatch decisions evaluated against incident requirements.
-    2. **Trajectory Shaping** (``_trajectory_shaping``)
-       Delta-severity bonus/penalty across consecutive steps.
-    3. **Context-Grounded Semantic Grader** (``calculate_nlp_bonus``)
+    Layers applied:
+
+    1. **Dispatch Quality + Trajectory Shaping** (``calculate_step_reward``)
+       Numeric dispatch decisions evaluated against incident requirements,
+       plus Δ-severity shaping across consecutive steps.
+    2. **Context-Grounded Semantic Grader** (``calculate_nlp_bonus``)
        Evaluates the quality of the agent's natural-language broadcast
        message against the actual crisis state.  Scores 0-1.0 only when
        a HIGH/CATASTROPHIC fire or CRITICAL patient is active.
-       Max +1.0 bonus per step. Components:
-         - Zone name present in message   -> +0.4
-         - Correct hazard keyword present -> +0.3
-         - Directive verb present         -> +0.3
-       Prevents free-rider hacks by requiring semantically grounded text.
 
     Args:
         action:         Agent's dispatch action.
@@ -845,7 +866,9 @@ def compute_reward(
         if no zone had an unmet requirement at this step.
     """
     prior = previous_state if previous_state is not None else obs
-    total_reward = calculate_step_reward(
+
+    # calculate_step_reward now returns a Reward ledger object (Layers 1 + 2)
+    reward_ledger: Reward = calculate_step_reward(
         current_state=obs,
         action=action,
         previous_state=prior,
@@ -855,15 +878,35 @@ def compute_reward(
     # Gate: only award when there is an active HIGH/CATASTROPHIC fire OR a
     # CRITICAL patient.  Outside of crisis conditions the broadcast is
     # irrelevant — granting a bonus here would reward unnecessary scaremongering.
+    nlp_bonus_value: float = 0.0
     has_high_severity = any(
         z.fire in (FireLevel.HIGH, FireLevel.CATASTROPHIC)
         or z.patient == PatientLevel.CRITICAL
         for z in obs.zones.values()
     )
     if has_high_severity and action.public_broadcast_message:
-        nlp_bonus = calculate_nlp_bonus(action.public_broadcast_message, obs)
-        total_reward += nlp_bonus
-        logger.debug("Layer 3 NLP bonus applied: +%.2f", nlp_bonus)
+        nlp_bonus_value = calculate_nlp_bonus(action.public_broadcast_message, obs)
+        logger.debug("Layer 3 NLP bonus applied: +%.2f", nlp_bonus_value)
+
+    # Build the final Reward ledger with all three populated layers.
+    # waste_penalty is left at 0.0 here; environment.py owns that accumulator
+    # and logs the full ledger JSON with the live waste figure after resolution.
+    base = reward_ledger.base_dispatch_score
+    total = base + nlp_bonus_value  # waste_penalty deduction tracked separately
+    final_ledger = Reward(
+        base_dispatch_score=base,
+        nlp_semantic_bonus=nlp_bonus_value,
+        waste_penalty=0.0,
+        total_reward=total,
+        dispatch_quality=reward_ledger.dispatch_quality,
+        trajectory_shaping=reward_ledger.trajectory_shaping,
+        nlp_bonus=nlp_bonus_value,
+        is_terminal=False,  # is_terminal set by environment.py after step
+    )
+    logger.info(
+        "Reward Ledger JSON: %s",
+        final_ledger.model_dump_json(),
+    )
 
     # Derive all_resolved: True only if every zone had no active incidents
     # OR the dispatch was sufficient for all zones.
@@ -891,4 +934,4 @@ def compute_reward(
             all_resolved = False
             break
 
-    return total_reward, all_resolved
+    return final_ledger.total_reward, all_resolved

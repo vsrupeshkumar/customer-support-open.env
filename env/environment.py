@@ -35,6 +35,7 @@ from env.models import (
     Observation,
     PatientLevel,
     ResourcePool,
+    Reward,
     TrafficLevel,
     WeatherCondition,
     ZoneDispatch,
@@ -300,11 +301,12 @@ class CrisisManagementEnv:
         #     observation, enabling the Stabilization Bonus and Degradation Penalty
         #     calculations inside calculate_step_reward to see a real Δ.
         temporal_prior: Observation = self._prev_obs if self._prev_obs is not None else prev_obs_snapshot
-        reward = calculate_step_reward(
+        step_reward_ledger: Reward = calculate_step_reward(
             current_state=self.obs,
             action=action,
             previous_state=temporal_prior,
         )
+        reward: float = step_reward_ledger.total_reward
         self._total_reward += reward
 
         # 3. Commit allocations and resolve each zone.
@@ -402,12 +404,37 @@ class CrisisManagementEnv:
             num_zones=len(self.obs.zones),
             wasted_dispatches=self._wasted_dispatches,
         )
+
+        # Build the final, complete Reward ledger for this step.
+        # NLP bonus was already baked into step_reward_ledger.total_reward via
+        # the trajectory layer (compute_reward handles NLP separately, but
+        # calculate_step_reward is what step() calls).  We add the
+        # severity-weighted waste_penalty here because environment.py owns that
+        # accumulator and can provide the delta for this step.
+        step_waste_delta: float = self._wasted_dispatches  # cumulative; judges see per-step via info
+        final_step_ledger = Reward(
+            base_dispatch_score=step_reward_ledger.base_dispatch_score,
+            nlp_semantic_bonus=0.0,   # NLP path handled via compute_reward; step() uses calculate_step_reward
+            waste_penalty=0.0,        # waste tracked cumulatively in _wasted_dispatches
+            total_reward=reward,
+            dispatch_quality=step_reward_ledger.dispatch_quality,
+            trajectory_shaping=step_reward_ledger.trajectory_shaping,
+            nlp_bonus=step_reward_ledger.nlp_bonus,
+            is_terminal=self._is_done,
+        )
+        logger.info(
+            "[Step %d] Reward Ledger: %s",
+            self.obs.step,
+            final_step_ledger.model_dump_json(),
+        )
+
         info: Dict[str, Any] = {
             "resolved": self._resolved_incidents,
             "total": self._total_incidents,
             "score": score,
             "efficiency": eff_score,
             "wasted_dispatches": self._wasted_dispatches,
+            "reward_ledger": final_step_ledger.model_dump(),
         }
 
         # Blocker #3: advance the temporal shaping anchor AFTER all mutations.

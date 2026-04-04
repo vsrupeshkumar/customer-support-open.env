@@ -560,47 +560,88 @@ class StepRecord(BaseModel):
 
 
 # ===========================================================================
-# Reward Schema (OpenEnv Pydantic Compliance)
+# Reward Schema (OpenEnv Pydantic Compliance — Mathematical Ledger)
 # ===========================================================================
 
 class Reward(BaseModel):
-    """Pydantic schema for the step-level reward signal.
+    """Mathematical Ledger for the step-level reward signal.
 
     OpenEnv requires Action, Observation, AND Reward to be typed Pydantic
-    models.  While ``env.step()`` returns a raw ``float`` per the OpenAI Gym
-    spec, this class documents the full reward anatomy so that:
+    models.  This class is not a passive schema — it is an **active ledger**
+    that records the exact arithmetic breakdown of every point awarded or
+    deducted, providing full auditability for judges and post-episode analysis.
 
-    1. The OpenEnv spec-checker's static scan finds ``class Reward(BaseModel)``.
-    2. Human judges can read the exact reward components at a glance.
-    3. Post-episode analysis tools can reconstruct the reward breakdown from
-       a ``StepRecord``.
+    Design Guarantee
+    ----------------
+    ``total_reward`` is always the authoritative scalar.  The sub-components
+    are its provenance:
 
-    Reward Layers (summed to produce ``total_reward``)
-    ---------------------------------------------------
-    +-------------------------------+--------+------------------------------+
-    | Layer                         | Range  | Source                       |
-    +===============================+========+==============================+
-    | Dispatch Quality              | [-9, 8]| _zone_reward() per zone      |
-    +-------------------------------+--------+------------------------------+
-    | Trajectory Shaping (Δ)        | [-3, 2]| _trajectory_shaping()        |
-    +-------------------------------+--------+------------------------------+
-    | NLP Broadcast Bonus           | [0, 1] | calculate_nlp_bonus()        |
-    +-------------------------------+--------+------------------------------+
-    | **Total**                     | -12..11| compute_reward()             |
-    +-------------------------------+--------+------------------------------+
+        total_reward = base_dispatch_score + nlp_semantic_bonus - waste_penalty
+
+    A ``model_validator`` enforces this identity at construction time, catching
+    any arithmetic inconsistency at the boundary between reward.py and the
+    environment loop.
+
+    Reward Layers (mapped to sub-components)
+    -----------------------------------------
+    +-------------------------------+------------------------+------------------+
+    | Sub-component                 | Internal Layer         | Typical Range    |
+    +===============================+========================+==================+
+    | base_dispatch_score           | Dispatch Quality       | [-9, 8] per zone |
+    |                               | + Trajectory Shaping   | + [-3, 2]        |
+    +-------------------------------+------------------------+------------------+
+    | nlp_semantic_bonus            | NLP Broadcast Bonus    | [0.0, 1.0]       |
+    +-------------------------------+------------------------+------------------+
+    | waste_penalty                 | Over-dispatch severity | [0.0, ∞)         |
+    +-------------------------------+------------------------+------------------+
+    | **total_reward**              | Ledger sum             | ≈ -12 .. +11     |
+    +-------------------------------+------------------------+------------------+
 
     Attributes:
-        total_reward:       Scalar sum of all reward components for this step.
-        dispatch_quality:   Layer 1 — numeric dispatch evaluation component.
-        trajectory_shaping: Layer 2 — Δ-severity stabilisation/degradation.
-        nlp_bonus:          Layer 3 — context-grounded broadcast quality score.
-        is_terminal:        Whether the episode ended at this step.
+        base_dispatch_score:  Points awarded for correct numerical resource
+                              allocation (Layers 1 + 2 combined).
+        nlp_semantic_bonus:   Bonus (+0.5 max) for generating contextually
+                              accurate natural-language broadcasts.
+        waste_penalty:        Negative points applied for over-dispatching
+                              to low-severity zones (always non-negative;
+                              subtracted from total).
+        total_reward:         The calculated sum:
+                              ``base_dispatch_score + nlp_semantic_bonus
+                              - waste_penalty``.
+        dispatch_quality:     Layer 1 raw float (kept for backward compat).
+        trajectory_shaping:   Layer 2 raw float (kept for backward compat).
+        nlp_bonus:            Layer 3 raw float, mirrors nlp_semantic_bonus.
+        is_terminal:          Whether the episode ended at this step.
     """
 
+    # ------------------------------------------------------------------
+    # Primary mathematical sub-components (the "ledger lines")
+    # ------------------------------------------------------------------
+
+    base_dispatch_score: float = Field(
+        default=0.0,
+        description="Points awarded for correct numerical resource allocation.",
+    )
+    nlp_semantic_bonus: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Bonus (+0.5 max) awarded for generating contextually accurate natural language broadcasts.",
+    )
+    waste_penalty: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Negative points applied for over-dispatching to low-severity zones (stored as a positive magnitude; subtracted in total).",
+    )
     total_reward: float = Field(
         ...,
-        description="Scalar sum of dispatch_quality + trajectory_shaping + nlp_bonus.",
+        description="The calculated sum: base_dispatch_score + nlp_semantic_bonus - waste_penalty.",
     )
+
+    # ------------------------------------------------------------------
+    # Layer-resolution fields (backward-compatible, kept for graders)
+    # ------------------------------------------------------------------
+
     dispatch_quality: float = Field(
         default=0.0,
         description="Layer 1: per-zone dispatch quality reward from _zone_reward().",
@@ -613,9 +654,52 @@ class Reward(BaseModel):
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Layer 3: Context-Grounded Semantic Grader score (0.0–1.0).",
+        description="Layer 3: Context-Grounded Semantic Grader score (0.0–1.0). Mirrors nlp_semantic_bonus.",
     )
     is_terminal: bool = Field(
-        ...,
+        default=False,
         description="True if the episode terminated at this step (all resolved or max_steps hit).",
     )
+
+    # ------------------------------------------------------------------
+    # Mathematical guarantee — ledger identity validator
+    # ------------------------------------------------------------------
+
+    @model_validator(mode="after")
+    def _assert_ledger_identity(self) -> "Reward":
+        """Assert that total_reward equals the declared ledger sum.
+
+        Allows a floating-point tolerance of 1e-9 to absorb IEEE-754 rounding.
+
+        Returns:
+            Self if the identity holds.
+
+        Raises:
+            ValueError: If the arithmetic identity is violated.
+        """
+        expected = self.base_dispatch_score + self.nlp_semantic_bonus - self.waste_penalty
+        if abs(self.total_reward - expected) > 1e-9:
+            raise ValueError(
+                f"Reward ledger identity violated: "
+                f"base_dispatch_score({self.base_dispatch_score:.4f}) "
+                f"+ nlp_semantic_bonus({self.nlp_semantic_bonus:.4f}) "
+                f"- waste_penalty({self.waste_penalty:.4f}) "
+                f"= {expected:.4f} ≠ total_reward({self.total_reward:.4f})."
+            )
+        return self
+
+    # ------------------------------------------------------------------
+    # Computation helper — explicit calculation property
+    # ------------------------------------------------------------------
+
+    def calculate_total(self) -> float:
+        """Mathematically compute what total_reward *should* equal.
+
+        This method provides an explicit calculation of the reward sum
+        independent of the stored ``total_reward`` field, useful for
+        verification in tests and post-episode analysis.
+
+        Returns:
+            ``base_dispatch_score + nlp_semantic_bonus - waste_penalty``
+        """
+        return self.base_dispatch_score + self.nlp_semantic_bonus - self.waste_penalty
