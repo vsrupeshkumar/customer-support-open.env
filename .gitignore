@@ -1,6 +1,35 @@
+# --- Python Artefacts ---
 __pycache__/
 *.pyc
-.env
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
 .venv/
-node_modules/
-dist/
+venv/
+ENV/
+*.log
+
+# --- Secrets & Config ---
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example
+
+# --- UI Archive (Headless Transition) ---
+# Ignore all heavy frontend dependencies inside the archive
+_ui_archive/**/node_modules/
+_ui_archive/**/.next/
+_ui_archive/**/dist/
+_ui_archive/**/build/
+_ui_archive/**/.cache/
+_ui_archive/**/.vercel/
+
+# --- Docker & System ---
+.docker/
+docker-compose.override.yml
+*.tar
+.DS_Store

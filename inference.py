@@ -6,6 +6,11 @@ import textwrap
 from typing import List, Optional, Dict, Any
 from copy import deepcopy
 
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 from env import CrisisManagementEnv
 from env.models import Action, Observation, ZoneDispatch, FireLevel, PatientLevel, TrafficLevel, WeatherCondition
 
@@ -32,8 +37,7 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float], effic
 # AI Agent Implementation
 # ==========================================
 
-class OpenAIAgent:
-    name = "StrategicAgent"
+class StrategicAgent:
     def __init__(self):
         self.model = os.environ.get("MODEL_NAME", "strategic-heuristic-agent")
         self.api_url = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000")
@@ -183,7 +187,7 @@ def generate_reasoning(obs: Observation, action: Action, reward: float) -> tuple
         strategy = "OptimizeResources"
     return critical, risk, strategy
 
-def run_agent(agent: OpenAIAgent, task_id: int):
+def run_agent(agent: StrategicAgent, task_id: int):
     env = CrisisManagementEnv(task_id=task_id)
     obs = env.reset()
     metrics = MetricsTracker()
@@ -228,10 +232,14 @@ def run_agent(agent: OpenAIAgent, task_id: int):
             success = final_score >= 0.5
             break
             
+    # Final metrics logging
     summary = metrics.get_summary()
 
     log_end(success=success, steps=step_count, score=final_score, rewards=rewards, 
             efficiency=summary["efficiency"], hazards_prevented=summary["hazards_prevented"], stability=summary["stability"])
+
+if __name__ == "__main__":
+    agent = StrategicAgent()
     # Run once per task as required to reproduce baseline scores
     for t_id in [1, 2, 3]:
         run_agent(agent, t_id)

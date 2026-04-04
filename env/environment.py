@@ -1,245 +1,534 @@
 """
-Robust Global Simulation Framework Engine.
-Processes the discrete operational time steps of the POMDP orchestrator tracking cooldown arrays locally.
+env/environment.py
+==================
+Core OpenEnv-compliant RL environment for the Adaptive Crisis Management
+simulation.
+
+This module is the single authoritative implementation of the environment
+interface.  It imports all data contracts from ``env.models`` and delegates
+reward computation to ``env.reward``.  No UI, web, or dashboard logic is
+permitted here.
+
+Interface
+---------
+The public API follows the OpenEnv specification:
+
+    env = CrisisManagementEnv(task_id=1)
+    obs: Observation = env.reset(seed=42)
+    obs, reward, done, info = env.step(action)
+    state: EnvironmentState = env.state()
 """
 
-import copy
+from __future__ import annotations
+
 import logging
-from typing import Tuple, Dict, Any, List, Optional
+import random
+from typing import Any, Dict, List, Optional, Tuple
 
-from env.models import Observation, Action, EnvironmentState, FireLevel, PatientLevel, TrafficLevel, WeatherCondition, ActiveDeployment, ZoneDispatch
-from env.tasks import create_task
+import numpy as np  # Used exclusively for np.random.seed() in reset()
+
+from env.models import (
+    Action,
+    ActiveDeployment,
+    EnvironmentState,
+    FireLevel,
+    Observation,
+    PatientLevel,
+    ResourcePool,
+    TrafficLevel,
+    WeatherCondition,
+    ZoneDispatch,
+    ZoneState,
+)
 from env.reward import compute_reward
-from env.grader import Grader
+from env.tasks import Task, create_task
 
-# Logger setup
+# ---------------------------------------------------------------------------
+# Module-level logger (engine diagnostics only — no UI formatting)
+# ---------------------------------------------------------------------------
+
 logger = logging.getLogger("crisis_env.engine")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
-    ch = logging.StreamHandler()
-    ch.setFormatter(logging.Formatter('[%(levelname)s] ENGINE - %(message)s'))
-    logger.addHandler(ch)
+    _ch = logging.StreamHandler()
+    _ch.setFormatter(logging.Formatter("[%(levelname)s] ENGINE - %(message)s"))
+    logger.addHandler(_ch)
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
 
 class EnvironmentException(Exception):
-    """Exception triggered on catastrophic simulation initialization bounding failures."""
-    pass
+    """Raised when the environment encounters an unrecoverable state error.
 
-class LifecycleManager:
-    """Manages the instantiation limits for active deployments in memory dynamically."""
-    
+    Examples:
+        Calling ``step()`` after the episode has already terminated.
+        Attempting to load an invalid task ID.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+class _LifecycleManager:
+    """Manages the cooldown countdown for all active (deployed) unit batches.
+
+    This is a stateless helper; all mutations happen to the mutable lists /
+    ``Observation`` objects passed into its methods.
+    """
+
     @staticmethod
-    def tick_deployments(obs: Observation, active_deployments: List[ActiveDeployment]) -> List[ActiveDeployment]:
-        """Iterates through deployed unit frames mapping cooldown returns recursively."""
-        new_deployments = []
-        recovered_fire, recovered_amb, recovered_pol = 0, 0, 0
-        
+    def tick(
+        obs: Observation,
+        active_deployments: List[ActiveDeployment],
+    ) -> List[ActiveDeployment]:
+        """Advance every deployment by one step and return still-active ones.
+
+        Units whose ``steps_remaining`` reaches zero are returned to the
+        ``idle_resources`` pool.
+
+        Args:
+            obs: The current observation whose resource pools will be mutated
+                in-place to reflect returning units.
+            active_deployments: The list of currently tracked deployments.
+
+        Returns:
+            A new list containing only deployments that still have steps
+            remaining (i.e., units that have *not* yet returned).
+        """
+        still_active: List[ActiveDeployment] = []
+        rec_fire = rec_amb = rec_pol = 0
+
         for dep in active_deployments:
             dep.steps_remaining -= 1
             if dep.steps_remaining <= 0:
-                # Synchronize pool recovery
-                recovered_fire += dep.fire_units
-                recovered_amb += dep.ambulances
-                recovered_pol += dep.police
+                rec_fire += dep.fire_units
+                rec_amb += dep.ambulances
+                rec_pol += dep.police
             else:
-                new_deployments.append(dep)
-                
-        # Batch execution prevents race conditions across multi-zone arrays
-        if recovered_fire > 0 or recovered_amb > 0 or recovered_pol > 0:
-            logger.debug(f"Engine recovered {recovered_fire}F | {recovered_amb}A | {recovered_pol}P back to Idle pool.")
-            obs.idle_resources.fire_units += recovered_fire
-            obs.idle_resources.ambulances += recovered_amb
-            obs.idle_resources.police += recovered_pol
-            
-            obs.busy_resources.fire_units -= recovered_fire
-            obs.busy_resources.ambulances -= recovered_amb
-            obs.busy_resources.police -= recovered_pol
-            
-        return new_deployments
+                still_active.append(dep)
 
+        if rec_fire or rec_amb or rec_pol:
+            obs.idle_resources.fire_units += rec_fire
+            obs.idle_resources.ambulances += rec_amb
+            obs.idle_resources.police += rec_pol
+            obs.busy_resources.fire_units -= rec_fire
+            obs.busy_resources.ambulances -= rec_amb
+            obs.busy_resources.police -= rec_pol
+            logger.debug(
+                "Recovered %dF | %dA | %dP to idle pool.", rec_fire, rec_amb, rec_pol
+            )
+
+        return still_active
+
+
+# ---------------------------------------------------------------------------
+# Main Environment Class
+# ---------------------------------------------------------------------------
 
 class CrisisManagementEnv:
+    """OpenEnv-compliant multi-zone crisis management RL environment.
+
+    The environment models a simulated city divided into named zones, each
+    of which can simultaneously suffer from fire, medical, and traffic
+    incidents.  An agent dispatches emergency resources each step and
+    receives a shaped scalar reward.
+
+    Attributes:
+        task_id: Selected task difficulty (1 = Easy, 2 = Medium, 3 = Hard).
+
+    Example:
+        >>> env = CrisisManagementEnv(task_id=2)
+        >>> obs = env.reset(seed=0)
+        >>> action = Action(allocations={"Downtown": ZoneDispatch(dispatch_fire=3)})
+        >>> obs, reward, done, info = env.step(action)
     """
-    Main Entrypoint Context object for OpenAI compliance frameworks.
-    Simulates high-end geographical constraints over time series dimensions.
-    """
-    def __init__(self, task_id: int = 1, seed: Optional[int] = None):
-        """
-        Initializes the Smart City Simulator engine context constraints.
-        
+
+    def __init__(self, task_id: int = 1, seed: Optional[int] = None) -> None:
+        """Initialise the environment and load the specified task.
+
         Args:
-            task_id (int): Difficulty map selection parameter.
-            seed (Optional[int]): Randomization state initializer tracking.
+            task_id: Difficulty level to load (1, 2, or 3).
+            seed: Optional random seed for reproducibility.  If provided it
+                is forwarded to ``reset()``.
+
+        Raises:
+            EnvironmentException: If ``task_id`` does not correspond to a
+                valid registered task.
         """
-        self.task_id = task_id
-        
+        self.task_id: int = task_id
+
         try:
-            self._task = create_task(task_id)
-        except Exception as e:
-            logger.error(f"Failed to mount task id {task_id}: {str(e)}")
-            raise EnvironmentException(f"Task generation sequence failed optimally: {str(e)}")
-            
-        self.grader = Grader()
-        self.active_deployments: List[ActiveDeployment] = []
-        self.reset()
-        logger.info(f"CrisisManagementEnv successfully booted locally against Task {task_id}.")
-    
-    def reset(self) -> Observation:
-        """
-        Completely flushes dynamic physics simulation states rendering initial evaluation variables.
-        
+            self._task: Task = create_task(task_id)
+        except ValueError as exc:
+            raise EnvironmentException(
+                f"Task ID {task_id} is not registered."
+            ) from exc
+
+        # Internal bookkeeping — initialised properly by reset()
+        self._rng: random.Random = random.Random(seed)
+        self._active_deployments: List[ActiveDeployment] = []
+        self._total_incidents: int = 0
+        self._resolved_incidents: int = 0
+        self._lives_saved: int = 0
+        self._total_reward: float = 0.0
+        self._is_done: bool = False
+        self.obs: Observation  # set by reset()
+
+        self.reset(seed=seed)
+        logger.info("CrisisManagementEnv successfully booted locally against Task %d.", task_id)
+
+    # ------------------------------------------------------------------
+    # Public OpenEnv interface
+    # ------------------------------------------------------------------
+
+    def reset(self, seed: Optional[int] = None) -> Observation:
+        """Reset the environment to a fresh episode state.
+
+        Determinism contract
+        --------------------
+        When ``seed`` is not ``None`` this method seeds **three** independent
+        RNG layers so that every source of randomness in the episode is locked:
+
+        1. ``random.seed(seed)``      — Python stdlib global (used by third-
+                                        party libs that may call random.*)
+        2. ``np.random.seed(seed)``   — NumPy global RNG (same rationale)
+        3. ``random.Random(seed)``    — The environment's *private* instance
+                                        (``self._rng``), used for any internal
+                                        random decisions outside tasks.
+
+        The task's ``generate_initial_observation(seed=seed)`` also receives
+        the same seed and constructs its own *isolated* ``random.Random(seed)``
+        so that incident generation is reproducible and immune to the global
+        state set in steps 1–2 above.
+
+        Args:
+            seed: Optional integer seed for deterministic incident generation.
+                Overrides the seed supplied at construction time.
+
         Returns:
-            Observation: Absolute initial mapped properties.
+            The initial ``Observation`` of the new episode.
         """
-        logger.debug("Executing engine reset parameters...")
-        self.obs = self._task.generate_initial_observation()
-        self.total_reward = 0.0
-        self.is_done = False
-        self.active_deployments = []
-        
-        self.total_incidents = 0
-        for z_name, z in self.obs.zones.items():
-            if z.fire != FireLevel.NONE: self.total_incidents += 1
-            if z.patient != PatientLevel.NONE: self.total_incidents += 1
-            if z.traffic in [TrafficLevel.HEAVY, TrafficLevel.GRIDLOCK]: self.total_incidents += 1
-            
-        self.resolved_incidents = 0
-        self.lives_saved = 0
+        if seed is not None:
+            # ---- Absolute determinism: lock ALL RNG layers ---------------
+            # 1. Python stdlib global — any code calling random.random() or
+            #    random.choice() directly will produce the same sequence.
+            random.seed(seed)
+
+            # 2. NumPy global RNG — covers numpy operations in training loops,
+            #    feature engineering pipelines, or observation wrappers.
+            np.random.seed(seed)
+
+            # 3. Private environment RNG instance — isolated, re-seeded so
+            #    it does not share state with the global random module.
+            self._rng = random.Random(seed)
+
+            logger.debug(
+                "Determinism enforced: random.seed(%d), np.random.seed(%d), "
+                "self._rng = random.Random(%d).",
+                seed, seed, seed,
+            )
+
+        self.obs = self._task.generate_initial_observation(seed=seed)
+        self._active_deployments = []
+        self._total_reward = 0.0
+        self._is_done = False
+        self._resolved_incidents = 0
+        self._lives_saved = 0
+        self._total_incidents = self._count_incidents(self.obs)
+        self._wasted_dispatches: int = 0  # Tracks over-allocation events for grader.
+
+        logger.debug("Environment reset.  Total incidents: %d.", self._total_incidents)
         return self.obs.model_copy(deep=True)
 
+    def step(
+        self, action: Action
+    ) -> Tuple[Observation, float, bool, Dict[str, Any]]:
+        """Execute a single simulation step.
 
-    def _commit_resource_allocation(self, zone_id: str, zone_state: Any, dispatch: ZoneDispatch) -> Tuple[int, int, int]:
-        """Bounds dispatch mappings rigorously against idle queues preventing arbitrary hallucination execution."""
+        Args:
+            action: The agent's dispatching decisions for this step.
+
+        Returns:
+            A 4-tuple of:
+
+            - **obs** (``Observation``): New observation after the step.
+            - **reward** (``float``): Shaped reward for this step.
+            - **done** (``bool``): Whether the episode has terminated.
+            - **info** (``dict``): Auxiliary diagnostics including
+              ``"score"``, ``"efficiency"``, ``"resolved"``, and ``"total"``.
+
+        Raises:
+            EnvironmentException: If called after the episode is already done.
+        """
+        if self._is_done:
+            raise EnvironmentException(
+                "Episode is done.  Call reset() before stepping again."
+            )
+
+        # 1. Advance time and recover returned units.
+        self.obs.step += 1
+        self._active_deployments = _LifecycleManager.tick(
+            self.obs, self._active_deployments
+        )
+
+        # 2. Compute reward *before* resolving zones (uses pre-action state).
+        reward, _ = compute_reward(action, self.obs)
+        self._total_reward += reward
+
+        # 3. Commit allocations and resolve each zone.
+        for zone_id, zone_state in self.obs.zones.items():
+            dispatch = action.allocations.get(zone_id, ZoneDispatch())
+            used_fire, used_amb, used_pol = self._commit_allocation(
+                zone_id, zone_state, dispatch
+            )
+            self._resolve_zone(zone_id, zone_state, used_fire, used_amb, used_pol)
+
+        # 4. Determine episode termination.
+        all_clear = all(
+            z.fire == FireLevel.NONE
+            and z.patient in (PatientLevel.NONE, PatientLevel.FATAL)
+            and z.traffic == TrafficLevel.LOW
+            for z in self.obs.zones.values()
+        )
+        if all_clear or self.obs.step >= self.obs.max_steps:
+            self._is_done = True
+            logger.info("Evaluation Terminated natively. Executing Scorecard hook.")
+
+        # 5. Build info dict.
+        from env.grader import Grader  # local import avoids circular deps at module level
+
+        score, eff_score = Grader().get_score(
+            self._resolved_incidents, self._total_incidents, self._total_reward
+        )
+        info: Dict[str, Any] = {
+            "resolved": self._resolved_incidents,
+            "total": self._total_incidents,
+            "score": score,
+            "efficiency": eff_score,
+        }
+
+        return self.obs.model_copy(deep=True), float(reward), self._is_done, info
+
+    def state(self) -> EnvironmentState:
+        """Return a complete internal snapshot of the environment.
+
+        This method exposes *more* than the public ``Observation``.  It is
+        intended for graders, monitors, and testing harnesses — not for the
+        agent itself during a live episode.
+
+        Returns:
+            A fully populated ``EnvironmentState`` reflecting the current
+            internal variables.
+        """
+        from env.grader import Grader  # local import avoids circular deps at module level
+
+        score, eff_score = Grader().get_score(
+            self._resolved_incidents, self._total_incidents, self._total_reward
+        )
+        return EnvironmentState(
+            step_count=self.obs.step,
+            max_steps=self.obs.max_steps,
+            observation=self.obs.model_copy(deep=True),
+            total_reward=self._total_reward,
+            is_done=self._is_done,
+            success=(self._resolved_incidents == self._total_incidents),
+            metrics={"efficiency": eff_score, "lives_saved": float(self._lives_saved)},
+        )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @property
+    def is_done(self) -> bool:
+        """Whether the current episode has terminated (read-only)."""
+        return self._is_done
+
+    @property
+    def total_reward(self) -> float:
+        """Cumulative episode reward accumulated so far (read-only)."""
+        return self._total_reward
+
+    @staticmethod
+    def _count_incidents(obs: Observation) -> int:
+        """Count total distinct active incidents across all zones.
+
+        Args:
+            obs: The initial observation from which to count.
+
+        Returns:
+            Integer count of active fire, medical, and traffic incidents.
+        """
+        count = 0
+        for z in obs.zones.values():
+            if z.fire != FireLevel.NONE:
+                count += 1
+            if z.patient != PatientLevel.NONE:
+                count += 1
+            if z.traffic in (TrafficLevel.HEAVY, TrafficLevel.GRIDLOCK):
+                count += 1
+        return count
+
+    def _commit_allocation(
+        self,
+        zone_id: str,
+        zone_state: ZoneState,
+        dispatch: ZoneDispatch,
+    ) -> Tuple[int, int, int]:
+        """Deduct dispatched units from idle pool and track as a deployment.
+
+        Dispatch counts are clamped to the available idle pool; the agent
+        cannot dispatch more resources than are currently idle.
+
+        Args:
+            zone_id: Identifier of the target zone (used for logging).
+            zone_state: Current state of the zone (used for cooldown calc).
+            dispatch: The dispatch order to commit.
+
+        Returns:
+            A 3-tuple ``(used_fire, used_amb, used_pol)`` reflecting the
+            actual units dispatched after clamping.
+        """
         used_fire = min(dispatch.dispatch_fire, self.obs.idle_resources.fire_units)
         used_amb = min(dispatch.dispatch_ambulance, self.obs.idle_resources.ambulances)
-        used_pol = 1 if (dispatch.control_traffic and self.obs.idle_resources.police > 0) else 0
+        used_pol = (
+            1 if dispatch.control_traffic and self.obs.idle_resources.police > 0 else 0
+        )
 
+        # Move units from idle → busy pool.
         self.obs.idle_resources.fire_units -= used_fire
         self.obs.idle_resources.ambulances -= used_amb
         self.obs.idle_resources.police -= used_pol
-
         self.obs.busy_resources.fire_units += used_fire
         self.obs.busy_resources.ambulances += used_amb
         self.obs.busy_resources.police += used_pol
 
+        # Calculate cooldown duration (weather + gridlock prolong deployments).
         cooldown = 1
-        if self.obs.weather == WeatherCondition.HURRICANE: cooldown = 3
-        elif self.obs.weather == WeatherCondition.STORM: cooldown = 2
-        if zone_state.traffic == TrafficLevel.GRIDLOCK: cooldown += 2
-        
-        if used_fire > 0 or used_amb > 0 or used_pol > 0:
-            logger.debug(f"{zone_id} deployed {used_fire}F|{used_amb}A|{used_pol}P recursively -> locked out for {cooldown} vectors.")
-            self.active_deployments.append(ActiveDeployment(zone_id=zone_id, fire_units=used_fire, ambulances=used_amb, police=used_pol, steps_remaining=cooldown))
-            
+        if self.obs.weather == WeatherCondition.HURRICANE:
+            cooldown = 3
+        elif self.obs.weather == WeatherCondition.STORM:
+            cooldown = 2
+        if zone_state.traffic == TrafficLevel.GRIDLOCK:
+            cooldown += 2
+
+        if used_fire or used_amb or used_pol:
+            self._active_deployments.append(
+                ActiveDeployment(
+                    zone_id=zone_id,
+                    fire_units=used_fire,
+                    ambulances=used_amb,
+                    police=used_pol,
+                    steps_remaining=cooldown,
+                )
+            )
+            logger.debug(
+                "%s: committed %dF/%dA/%dP (cooldown=%d).",
+                zone_id,
+                used_fire,
+                used_amb,
+                used_pol,
+                cooldown,
+            )
+
         return used_fire, used_amb, used_pol
 
+    def _resolve_zone(
+        self,
+        zone_id: str,
+        zone_state: ZoneState,
+        used_fire: int,
+        used_amb: int,
+        used_pol: int,
+    ) -> None:
+        """Evaluate whether dispatched units are sufficient to resolve the zone.
 
-    def _resolve_zone_engine(self, zone_id: str, zone_state: Any, used_fire: int, used_amb: int, used_pol: int):
-        """Processes the micro-events within an independent geographic sector based on input bounds."""
-        from env.reward import _get_required_fire, _get_required_ambulance
-        
+        If the dispatch satisfies all incident requirements the incidents are
+        cleared.  Otherwise the zone's ``consecutive_failures`` counter is
+        incremented and a cascade may be triggered.
+
+        Args:
+            zone_id: Zone identifier (used for cascade logging).
+            zone_state: Mutable zone state that will be updated in-place.
+            used_fire: Fire units actually committed this step.
+            used_amb: Ambulance units actually committed this step.
+            used_pol: Police units actually committed this step.
+        """
+        from env.reward import _get_required_fire, _get_required_ambulance  # pure fns
+
         req_fire = _get_required_fire(zone_state.fire, self.obs.weather)
         req_amb = _get_required_ambulance(zone_state.patient)
-        
-        resolved_this_zone = False
+        req_traffic = zone_state.traffic in (TrafficLevel.HEAVY, TrafficLevel.GRIDLOCK)
+
+        has_active = req_fire > 0 or req_amb > 0 or req_traffic
+
+        # Determine sufficiency.
         is_sufficient = True
-        
-        if req_fire > 0 and used_fire < req_fire: 
+        if req_fire > 0 and used_fire < req_fire:
             is_sufficient = False
         if req_amb > 0:
-            amb_mod = 2 if zone_state.traffic == TrafficLevel.GRIDLOCK and not used_pol else 0
-            if used_amb < req_amb + amb_mod: is_sufficient = False
-        if zone_state.traffic in [TrafficLevel.HEAVY, TrafficLevel.GRIDLOCK] and not used_pol: 
+            gridlock_mod = (
+                2
+                if zone_state.traffic == TrafficLevel.GRIDLOCK and not used_pol
+                else 0
+            )
+            if used_amb < req_amb + gridlock_mod:
+                is_sufficient = False
+        if req_traffic and not used_pol:
             is_sufficient = False
 
-        has_active_issues = (req_fire > 0 or req_amb > 0 or (zone_state.traffic in [TrafficLevel.HEAVY, TrafficLevel.GRIDLOCK]))
-
-        # Condition 1: Succesful resolution limits
-        if is_sufficient and has_active_issues:
-            resolved_this_zone = True
+        # ---- Successful resolution ----------------------------------------
+        if is_sufficient and has_active:
             if used_fire > 0 and zone_state.fire != FireLevel.NONE:
                 zone_state.fire = FireLevel.NONE
-                self.resolved_incidents += 1
-            if used_amb > 0 and zone_state.patient not in [PatientLevel.NONE, PatientLevel.FATAL]:
+                self._resolved_incidents += 1
+            if used_amb > 0 and zone_state.patient not in (
+                PatientLevel.NONE, PatientLevel.FATAL
+            ):
                 zone_state.patient = PatientLevel.NONE
-                self.resolved_incidents += 1
-                self.lives_saved += 18
-            if used_pol > 0 and zone_state.traffic in [TrafficLevel.HEAVY, TrafficLevel.GRIDLOCK]:
+                self._resolved_incidents += 1
+                self._lives_saved += 18
+            if used_pol > 0 and req_traffic:
                 zone_state.traffic = TrafficLevel.LOW
-                self.resolved_incidents += 1
-
-        # Condition 2: Cascading Micro-Failures Algorithm
-        active_remaining = (zone_state.fire != FireLevel.NONE or zone_state.patient not in [PatientLevel.NONE, PatientLevel.FATAL])
-        if not resolved_this_zone and active_remaining:
-            zone_state.consecutive_failures += 1
-            if zone_state.consecutive_failures >= 3:
-                logger.warning(f"CASCADING HAZARD TRIGGERED AT {zone_id} DUE TO LATENCY.")
-                if zone_state.fire == FireLevel.HIGH: zone_state.fire = FireLevel.CATASTROPHIC
-                elif zone_state.fire == FireLevel.MEDIUM: zone_state.fire = FireLevel.HIGH
-                elif zone_state.fire == FireLevel.LOW: zone_state.fire = FireLevel.MEDIUM
-                
-                if zone_state.patient == PatientLevel.CRITICAL: zone_state.patient = PatientLevel.FATAL
-                elif zone_state.patient == PatientLevel.MODERATE: zone_state.patient = PatientLevel.CRITICAL
-                
-                if zone_state.traffic == TrafficLevel.HEAVY: zone_state.traffic = TrafficLevel.GRIDLOCK
-                
-                zone_state.consecutive_failures = 0
-        else:
+                self._resolved_incidents += 1
             zone_state.consecutive_failures = 0
 
+        # ---- Failure / cascading escalation ---------------------------------
+        elif not is_sufficient and has_active:
+            zone_state.consecutive_failures += 1
+            if zone_state.consecutive_failures >= 3:
+                logger.warning(
+                    "CASCADING HAZARD TRIGGERED AT %s DUE TO LATENCY.", zone_id
+                )
+                self._escalate_zone(zone_state)
+                zone_state.consecutive_failures = 0
+        else:
+            # No incidents — reset failure counter regardless.
+            zone_state.consecutive_failures = 0
 
-    def step(self, action: Action) -> Tuple[Observation, float, bool, Dict[str, Any]]:
-        """
-        Executes a single algorithmic step tracking evaluation mechanics against the network.
-        
+    @staticmethod
+    def _escalate_zone(zone_state: ZoneState) -> None:
+        """Advance all hazards in a zone by one severity level (cascade).
+
         Args:
-            action (Action): Distributed dispatch array computed by the Agent network.
-            
-        Returns:
-            Tuple containing:
-            - Observation (Pydantic Mapped POMDP state)
-            - Total Reward (float bound)
-            - Done Flag (bool evaluation marker)
-            - Info Dict (Logging tracking variables)
+            zone_state: The zone to escalate (mutated in-place).
         """
-        if self.is_done:
-            raise EnvironmentException("Simulation actively terminated. Cannot dispatch further routing calculations over locked arrays.")
-            
-        self.obs.step += 1
-        
-        # Propagate time-series states 
-        self.active_deployments = LifecycleManager.tick_deployments(self.obs, self.active_deployments)
-        
-        # Score computation matrices
-        reward, _ = compute_reward(action, self.obs)
-        self.total_reward += reward
+        _fire_escalation: Dict[FireLevel, FireLevel] = {
+            FireLevel.LOW: FireLevel.MEDIUM,
+            FireLevel.MEDIUM: FireLevel.HIGH,
+            FireLevel.HIGH: FireLevel.CATASTROPHIC,
+        }
+        _patient_escalation: Dict[PatientLevel, PatientLevel] = {
+            PatientLevel.MODERATE: PatientLevel.CRITICAL,
+            PatientLevel.CRITICAL: PatientLevel.FATAL,
+        }
 
-        for zone_id, zone_state in self.obs.zones.items():
-            dispatch = action.allocations.get(zone_id, ZoneDispatch())
-            
-            used_fire, used_amb, used_pol = self._commit_resource_allocation(zone_id, zone_state, dispatch)
-            self._resolve_zone_engine(zone_id, zone_state, used_fire, used_amb, used_pol)
-
-        # Check absolute completion array termination flags
-        all_clear = True
-        for z in self.obs.zones.values():
-            if z.fire != FireLevel.NONE or z.patient not in [PatientLevel.NONE, PatientLevel.FATAL] or z.traffic != TrafficLevel.LOW:
-                all_clear = False
-                break
-                
-        if all_clear or self.obs.step >= self.obs.max_steps:
-            self.is_done = True
-            logger.info("Evaluation Terminated natively. Executing Scorecard hook.")
-            
-        score, eff_score = self.grader.get_score(self.resolved_incidents, self.total_incidents, self.total_reward)
-        info = {"resolved": self.resolved_incidents, "total": self.total_incidents, "score": score, "efficiency": eff_score}
-        
-        return self.obs.model_copy(deep=True), float(reward), self.is_done, info
-
-    def state(self) -> EnvironmentState:
-        """Publishes the global meta-context structure instantly resolving deep matrices."""
-        score, eff_score = self.grader.get_score(self.resolved_incidents, self.total_incidents, self.total_reward)
-        return EnvironmentState(
-            step_count=self.obs.step, max_steps=self.obs.max_steps, observation=self.obs.model_copy(deep=True),
-            total_reward=self.total_reward, is_done=self.is_done, success=self.resolved_incidents == self.total_incidents,
-            metrics={"eff": eff_score, "lives": self.lives_saved}
-        )
+        if zone_state.fire in _fire_escalation:
+            zone_state.fire = _fire_escalation[zone_state.fire]
+        if zone_state.patient in _patient_escalation:
+            zone_state.patient = _patient_escalation[zone_state.patient]
+        if zone_state.traffic == TrafficLevel.HEAVY:
+            zone_state.traffic = TrafficLevel.GRIDLOCK

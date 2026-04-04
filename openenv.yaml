@@ -1,8 +1,8 @@
 name: adaptive-crisis-management-env
 version: "4.0.0"
 description: >
-  An Enterprise-Grade, Multi-Zone POMDP for routing emergency response 
-  across distributed geographical clusters tracking weather latency.
+  An Enterprise-Grade, Multi-Zone POMDP for routing emergency response
+  across distributed geographical clusters tracking weather and traffic latency.
 
 author: "Meta Capstone Team"
 license: "Apache-2.0"
@@ -14,60 +14,111 @@ interface:
 
 observation_space:
   type: structured
+  schema: "env.models.Observation"
   fields:
     weather:
       type: enum
       values: [clear, storm, hurricane]
+      description: "Global weather modifier affecting all zones equally"
     zones:
-      type: object # Maps zone_id to ZoneState
+      type: object
+      description: "Maps zone_id (str) to ZoneState"
+      value_schema:
+        fire:
+          type: enum
+          values: [none, low, medium, high, catastrophic]
+        patient:
+          type: enum
+          values: [none, moderate, critical, fatal]
+        traffic:
+          type: enum
+          values: [low, heavy, gridlock]
+        consecutive_failures:
+          type: int
+          minimum: 0
     idle_resources:
       type: object
+      schema: "env.models.ResourcePool"
       fields:
-        fire_units: {type: int}
-        ambulances: {type: int}
-        police: {type: int}
+        fire_units: {type: int, minimum: 0}
+        ambulances:  {type: int, minimum: 0}
+        police:      {type: int, minimum: 0}
     busy_resources:
       type: object
+      schema: "env.models.ResourcePool"
       fields:
-        fire_units: {type: int}
-        ambulances: {type: int}
-        police: {type: int}
-    step: {type: int}
-    max_steps: {type: int}
+        fire_units: {type: int, minimum: 0}
+        ambulances:  {type: int, minimum: 0}
+        police:      {type: int, minimum: 0}
+    step:
+      type: int
+      minimum: 0
+    max_steps:
+      type: int
+      minimum: 1
+    task_level:
+      type: enum
+      values: [easy, medium, hard]
 
 action_space:
   type: structured
+  schema: "env.models.Action"
   fields:
     allocations:
-      type: object # Maps zone_id to ZoneDispatch dicts
+      type: object
+      description: "Maps zone_id (str) to ZoneDispatch"
+      value_schema:
+        dispatch_fire:
+          type: int
+          minimum: 0
+          maximum: 50
+        dispatch_ambulance:
+          type: int
+          minimum: 0
+          maximum: 50
+        control_traffic:
+          type: bool
 
 reward:
-  type: discrete
+  type: scalar
+  range: [-inf, +inf]
   components:
     efficiency: "Dynamic payload scaling per discrete zone allocation"
+    hazard_penalty: "Penalty for unresolved or escalating incidents"
+    cascade_penalty: "Penalty for triggering cascading failure events"
 
 tasks:
-  - id: 1
+  task_1_easy:
+    id: 1
     name: "Single-Zone Emergency"
     difficulty: easy
-  - id: 2
+    description: "One active zone, clear weather, limited resources."
+  task_2_medium:
+    id: 2
     name: "Multi-Zone Weather Chaos"
     difficulty: medium
-  - id: 3
+    description: "Multiple simultaneous zones under storm conditions."
+  task_3_hard:
+    id: 3
     name: "City-Wide Meta Triage"
     difficulty: hard
+    description: "All zones active under hurricane conditions with scarce resources."
 
 grading:
   formula: "(Success Rate * 0.50) + (Minimal Wastage Efficiency * 0.50)"
+  success_threshold: 0.5
 
 runtime:
   language: python
   version: ">=3.10"
   entry_point: "inference.py"
+  api_entry_point: "server.py"
   docker_image: "crisis-management-env:latest"
+  api_port: 7860
 
 dependencies:
   - "pydantic>=2.0.0"
+  - "numpy>=1.24.0"
   - "pyyaml>=6.0"
   - "openai>=1.0.0"
   - "fastapi>=0.100.0"
