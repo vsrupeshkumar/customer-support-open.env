@@ -1,0 +1,74 @@
+name: adaptive-crisis-management-env
+version: "4.0.0"
+description: >
+  An Enterprise-Grade, Multi-Zone POMDP for routing emergency response 
+  across distributed geographical clusters tracking weather latency.
+
+author: "Meta Capstone Team"
+license: "Apache-2.0"
+
+interface:
+  reset: "Returns initial Observation for a new episode"
+  step:  "Takes Action, returns (Observation, reward, done, info)"
+  state: "Returns full EnvironmentState at any point"
+
+observation_space:
+  type: structured
+  fields:
+    weather:
+      type: enum
+      values: [clear, storm, hurricane]
+    zones:
+      type: object # Maps zone_id to ZoneState
+    idle_resources:
+      type: object
+      fields:
+        fire_units: {type: int}
+        ambulances: {type: int}
+        police: {type: int}
+    busy_resources:
+      type: object
+      fields:
+        fire_units: {type: int}
+        ambulances: {type: int}
+        police: {type: int}
+    step: {type: int}
+    max_steps: {type: int}
+
+action_space:
+  type: structured
+  fields:
+    allocations:
+      type: object # Maps zone_id to ZoneDispatch dicts
+
+reward:
+  type: discrete
+  components:
+    efficiency: "Dynamic payload scaling per discrete zone allocation"
+
+tasks:
+  - id: 1
+    name: "Single-Zone Emergency"
+    difficulty: easy
+  - id: 2
+    name: "Multi-Zone Weather Chaos"
+    difficulty: medium
+  - id: 3
+    name: "City-Wide Meta Triage"
+    difficulty: hard
+
+grading:
+  formula: "(Success Rate * 0.50) + (Minimal Wastage Efficiency * 0.50)"
+
+runtime:
+  language: python
+  version: ">=3.10"
+  entry_point: "inference.py"
+  docker_image: "crisis-management-env:latest"
+
+dependencies:
+  - "pydantic>=2.0.0"
+  - "pyyaml>=6.0"
+  - "openai>=1.0.0"
+  - "fastapi>=0.100.0"
+  - "uvicorn>=0.22.0"

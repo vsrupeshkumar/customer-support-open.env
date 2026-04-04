@@ -1,0 +1,17 @@
+[project]
+name = "adaptive-crisis-openenv"
+version = "0.1.0"
+description = "Adaptive Crisis Management OpenEnv Environment"
+dependencies = [
+    "pydantic",
+    "fastapi",
+    "uvicorn",
+    "pyyaml",
+    "openai",
+    "gradio",
+    "pandas",
+    "openenv-core>=0.2.0"
+]
+
+[project.scripts]
+server = "server.app:main"
