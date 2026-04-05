@@ -79,8 +79,8 @@ if [ -f ".venv/bin/activate" ]; then
     source .venv/bin/activate
 fi
 
-if ! openenv validate openenv.yaml ; then
-    echo "❌ CRITICAL ERROR: Stage 3 Failed. 'openenv validate openenv.yaml' encountered errors."
+if ! openenv validate . ; then
+    echo "❌ CRITICAL ERROR: Stage 3 Failed. 'openenv validate .' encountered errors."
     echo "Deployment aborted."
     exit 1
 fi
