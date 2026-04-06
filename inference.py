@@ -43,7 +43,7 @@ from dotenv import load_dotenv
 # ---------------------------------------------------------------------------
 # Global Configuration & Environment (No-Default Rule for Secrets)
 # ---------------------------------------------------------------------------
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8080/v1")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
@@ -62,7 +62,10 @@ from pydantic import ValidationError
 # ---------------------------------------------------------------------------
 # Strict OpenAI Client Configuration
 # ---------------------------------------------------------------------------
-client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+client = OpenAI(
+    base_url=API_BASE_URL,
+    api_key=HF_TOKEN
+)
 
 
 # ---------------------------------------------------------------------------
