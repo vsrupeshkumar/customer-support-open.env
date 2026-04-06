@@ -13,6 +13,15 @@ openenv_spec: "1.0"
 # Adaptive Crisis Management Environment
 *A Zero-Trust, Guillotine-Proof OpenEnv RL Evaluation Framework*
 
+**[🟢 Live Hugging Face Space](https://huggingface.co/spaces/Anbu-00001/adaptive-crisis-env)**
+
+| Component | Technology | Specification |
+| :--- | :--- | :--- |
+| **RL Architecture** | POMDP | Epistemic Strictness Enforced |
+| **Inference Engine** | Llama 3.3 | Groq LPU (Sub-100ms) |
+| **API Bridge** | FastAPI / Uvicorn | Port 7860 |
+| **Environment** | Docker | `python:3.10-slim` (UID 1000) |
+
 The **adaptive-crisis-env** is an advanced state-transition engine engineered for evaluating large language model (LLM) reasoning, planning, and resource allocation under extreme multi-objective constraints. Designed rigorously for the Meta PyTorch OpenEnv Hackathon, this environment drops the heuristic "toy" physics for mathematically bounded, stateless operational complexity.
 
 ## 1. Mathematical Formulation
@@ -40,6 +49,20 @@ Where $\omega_i$ are explicitly defined weights balancing critical metrics heavi
 We implement a strict temporal discount factor of **$\gamma = 0.99$**. 
 In emergency crisis routing, long-term stabilization trajectories are vastly more critical than myopic immediate-reward gaming. A $\gamma$ value of $0.99$ mathematically forces the RL agent sequence to prioritize sustained cascading-failure prevention over prioritizing a localized, easy resolution while allowing other zones to drift into catastrophic failure states.
 
+### Visualizing the State-Transition Loop
+```mermaid
+graph LR
+    A[LLM Agent / Grader] -- "Action (A_t)" --> B[FastAPI Bridge]
+    B -- "Parsed / Sanitized" --> C((Crisis Engine))
+    C -- "Calculates Chaos & Physics" --> C
+    C -- "State (S_t) + Reward (R_t)" --> B
+    B -- "200 OK + JSON" --> A
+    
+    style A fill:#e1f5fe,stroke:#01579b
+    style B fill:#f3e5f5,stroke:#4a148c
+    style C fill:#ffebee,stroke:#b71c1c,stroke-width:2px
+```
+
 ## 2. System Architecture: The FastAPI-Docker Bridge
 
 To strictly adhere to OpenEnv Phase 1 validation (the "Guillotine" checks), absolute statelessness and reproducible container executions are required natively.
@@ -50,6 +73,22 @@ Our architecture leverages a strict **FastAPI-Docker Bridge**. Each simulation w
 Historically, rigorous RL environments fail in evaluating LLMs because agents frequently hallucinate JSON formatting (e.g., outputting `"five"` instead of `5`). Standard APIs crash explicitly with a `422 Unprocessable Entity`, dropping the container.
 
 We completely redesigned the API boundary logic to process these native hallucinations algorithmically. Rather than crashing endpoints, malformed actions are intelligently parsed and mapped internally to a `StructuralHallucinationError`. Our `FastAPI` instance natively returns a continuous `200 OK` handshake but natively routes the hallucination into the step engine as a terminal penalty evaluation. The sequence never breaks, the infrastructure stays perfectly stateless, and the LLM safely receives its negative feedback gradient.
+
+### Hallucination Handling Sequence
+```mermaid
+sequenceDiagram
+    participant LLM as Meta Grader (LLM)
+    participant API as FastAPI Bridge
+    participant Env as POMDP Engine
+
+    LLM->>API: Malformed JSON (e.g., amount: "five")
+    Note over API: Pydantic Validation Fails (normally a 422 crash)
+    API->>API: Intercept & Suppress Exception
+    API->>Env: Trigger StructuralHallucinationError
+    Note over Env: Apply Cascade Penalty to Reward
+    Env-->>API: Return Next State + Negative Reward
+    API-->>LLM: HTTP 200 OK (Graceful Continuation)
+```
 
 ## 3. Zero-Trust Architecture & Inference
 

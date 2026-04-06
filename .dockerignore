@@ -1,17 +1,37 @@
+# Python & Bytecode
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
 *.pyd
 
+# Git
 .git/
 .gitignore
 
+# Virtual Environments
 venv/
 .env/
-env/bin/
+env/
+.venv/
 
+# Security
+.env
+*.pem
+*.key
+
+# IDEs and OS Artifacts
+.vscode/
+.idea/
+.DS_Store
+
+# Notebooks & ML Checkpoints
 *.ipynb
 *.pt
 *.pth
 
-.env
+# Legacy/Unrelated Dependencies
+node_modules/
+*.lockb
+
+# Logs
+*.log

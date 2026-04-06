@@ -18,10 +18,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # ---- Non-root user (Hugging Face Spaces security requirement) ---
-# Create a system group + user named "appuser" with no login shell
-RUN groupadd --system appuser && \
-    useradd --system --gid appuser --no-create-home appuser && \
-    chown -R appuser:appuser /app
+RUN useradd -m -u 1000 appuser
 
 # ---- Python dependencies (installed as root for system-wide access) ----
 COPY requirements.txt ./
@@ -29,13 +26,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # ---- Application source ----------------------------------------
 # Set Difference Architecture: Copy everything, filtered strictly by .dockerignore
-COPY . .
-
-# ---- Transfer ownership to non-root user -----------------------
-RUN chown -R appuser:appuser /app
+COPY --chown=appuser:appuser . .
 
 # ---- Switch to non-root user -----------------------------------
-USER appuser
+USER 1000
 
 # ---- Network ---------------------------------------------------
 EXPOSE 7860

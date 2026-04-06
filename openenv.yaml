@@ -1,6 +1,6 @@
 spec_version: "1.0.0"
 env_id: "adaptive-crisis-env"
-entrypoint: "inference.py"
+entrypoint: "server/app.py"
 version: "4.0.0"
 description: >
   An Enterprise-Grade, Multi-Zone POMDP for routing emergency response
@@ -13,7 +13,7 @@ metadata:
   engine: "Meta Llama 3.3 via Groq"
   mathematical_standout:
     state_space:
-      definition: "S \\in [0, 1]^{12}"
+      definition: 'S \in [0, 1]^{12}'
       description: >
         Normalized vector representing 12 critical crisis metrics: 
         (Flood Level, Power Grid, Population Density, Fire Severity, 
@@ -21,9 +21,10 @@ metadata:
         Infrastructure Integrity, Supply Chain Latency, 
         Communication Uptime, Medical Capacity, Unit Readiness).
     action_space:
-      definition: "A \\in {0, 1, 2, 3, 4, 5}"
+      definition: 'A \in T \times U \times Z \times \mathbb{N}_0'
       description: >
-        Discrete space representing specific intervention types.
+        Composite structured space where T={dispatch, stabilize, control}, 
+        U={fire, medical, police}, Z=Active Zones, and N=Resource Quantities.
     stochasticity_descriptors:
       transition_probability: "P(s' | s, a)"
       chaos_factor: "\\chi"
@@ -80,20 +81,17 @@ action_space:
   type: structured
   schema: "env.models.Action"
   fields:
-    allocations:
-      type: object
-      description: "Maps zone_id (str) to ZoneDispatch"
-      value_schema:
-        dispatch_fire:
-          type: int
-          minimum: 0
-          maximum: 50
-        dispatch_ambulance:
-          type: int
-          minimum: 0
-          maximum: 50
-        control_traffic:
-          type: bool
+    type: 
+      type: enum
+      values: [dispatch, stabilize, control_traffic]
+    unit:
+      type: enum
+      values: [fire_truck, ambulance, police]
+    zone_id:
+      type: str
+    amount:
+      type: int
+      minimum: 0
 
 reward:
   type: scalar
