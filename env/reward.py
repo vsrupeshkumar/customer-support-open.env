@@ -758,8 +758,20 @@ def calculate_step_reward(
     #   R_multi = (severity_delta × 1.5) + efficiency_bonus − time_penalty
     multi_obj_reward: float = (severity_delta * 1.5) + efficiency_bonus - time_penalty
 
-    # Unified total: Layer 1+2 (dispatch quality) + Layer 3 (POMDP objective)
-    total_reward = base_dispatch_score + multi_obj_reward
+    # 1. Synthesize the complete Multi-Objective Reward Tensor
+    #    R_total = R_base + R_semantic - R_waste + R_efficiency - R_time + R_multiobj
+    #    NOTE: nlp_semantic_bonus and waste_penalty are 0.0 at this stage;
+    #          they are injected by compute_reward / environment.py respectively.
+    #          They are included here explicitly so that the Pydantic ledger
+    #          identity (verify_reward_ledger) holds at construction time.
+    total_reward = (
+        base_dispatch_score +
+        0.0 -           # nlp_semantic_bonus  (orphan-safe; populated downstream)
+        0.0 +           # waste_penalty        (orphan-safe; populated downstream)
+        efficiency_bonus -
+        time_penalty +
+        multi_obj_reward  # CRITICAL PATCH: Inject orphaned multi-objective bonus
+    )
 
     logger.info(
         "Step reward total=%.4f | dispatch_quality=%.4f trajectory_shaping=%.4f "
@@ -771,7 +783,8 @@ def calculate_step_reward(
         len(current_state.zones),
     )
 
-    return Reward(
+    # 2. Construct the strict Pydantic ledger
+    step_reward = Reward(
         base_dispatch_score=base_dispatch_score,
         nlp_semantic_bonus=0.0,   # populated by compute_reward after NLP grading
         waste_penalty=0.0,        # populated by environment.py waste accumulator
@@ -784,6 +797,7 @@ def calculate_step_reward(
         nlp_bonus=0.0,
         is_terminal=False,
     )
+    return step_reward
 
 
 # Directive 3 Compliance: Penalties are mathematically subtracted from the total reward.

@@ -735,15 +735,31 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         # -----------------------------------------------------------------------
         step_waste_penalty: float = self._wasted_dispatches - _waste_before_step
 
-        # Ruthless Utility final reward — no zero-floor.
-        reward: float = (base_dispatch_reward + step_nlp_bonus) - step_waste_penalty
+        # Pull Layer 3 components from the step_reward_ledger so the 6-component
+        # Pydantic identity (verify_reward_ledger) holds in the final ledger too.
+        step_efficiency_bonus: float = step_reward_ledger.efficiency_bonus
+        step_time_penalty: float     = step_reward_ledger.time_penalty
+        step_multi_obj: float        = step_reward_ledger.multi_obj
+
+        # 1. Synthesize the complete Multi-Objective Reward Tensor
+        #    R_total = R_base + R_semantic - R_waste + R_efficiency - R_time + R_multiobj
+        reward: float = (
+            base_dispatch_reward +
+            step_nlp_bonus -
+            step_waste_penalty +
+            step_efficiency_bonus -
+            step_time_penalty +
+            step_multi_obj  # CRITICAL PATCH: Inject orphaned multi-objective bonus
+        )
 
         # Commit the corrected step reward to the cumulative episode total.
         self._total_reward += reward
 
         logger.info(
-            "[Step %d] Ruthless Utility: base=%.4f + nlp=%.4f - waste=%.4f = total=%.4f",
-            self._step_count, base_dispatch_reward, step_nlp_bonus, step_waste_penalty, reward,
+            "[Step %d] Ruthless Utility: base=%.4f + nlp=%.4f - waste=%.4f "
+            "+ efficiency=%.4f - time=%.4f + multi_obj=%.4f = total=%.4f",
+            self._step_count, base_dispatch_reward, step_nlp_bonus, step_waste_penalty,
+            step_efficiency_bonus, step_time_penalty, step_multi_obj, reward,
         )
 
         score, eff_score = Grader().get_score(
@@ -755,17 +771,17 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
             wasted_dispatches=self._wasted_dispatches,
         )
 
-        # Build the final, authoritative Reward ledger for this step.
-        # All three ledger lines are now correctly populated:
-        #   base_dispatch_score — dispatch quality + trajectory shaping
-        #   nlp_semantic_bonus  — NLP precision score (CAN be negative, Directive 3)
-        #   waste_penalty       — positive scalar representation of resource waste
-        #   total_reward        — Ruthless Utility sum (not clamped)
+        # 2. Construct the strict Pydantic ledger — all 6 components populated.
+        #    The verify_reward_ledger model_validator enforces:
+        #      base + nlp - waste + efficiency - time + multi_obj == total_reward
         final_step_ledger = Reward(
             base_dispatch_score=base_dispatch_reward,
             nlp_semantic_bonus=step_nlp_bonus,
-            waste_penalty=step_waste_penalty,          # positive magnitude; subtracted in total
-            total_reward=reward,                        # = base + nlp - waste (Directive 3)
+            waste_penalty=step_waste_penalty,
+            efficiency_bonus=step_efficiency_bonus,
+            time_penalty=step_time_penalty,
+            multi_obj=step_multi_obj,
+            total_reward=reward,
             dispatch_quality=step_reward_ledger.dispatch_quality,
             trajectory_shaping=step_reward_ledger.trajectory_shaping,
             nlp_bonus=step_nlp_bonus,
