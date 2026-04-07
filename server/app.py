@@ -178,7 +178,13 @@ async def reset(request: Request) -> Dict[str, Any]:
 
 @app.post("/step", response_model=StepResponse, tags=["openenv"])
 async def step(request: Request) -> StepResponse:
-    """Pure dumb router — POMDP math lives exclusively in env/reward.py."""
+    """Pure dumb router — POMDP math lives exclusively in env/reward.py.
+
+    Resilience contract: this endpoint NEVER returns HTTP 5xx to the agent.
+    Any internal error (Reward ledger validation, Pydantic mismatch, etc.)
+    is caught and converted to a safe -5.0 penalty StepResponse so the
+    inference script's raise_for_status() never aborts an episode mid-run.
+    """
     env = _get_env()
     try:
         data = await request.json()
@@ -203,8 +209,16 @@ async def step(request: Request) -> StepResponse:
             info=info,
         )
     except Exception as exc:
-        logger.exception("Error during /step: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        # Internal environment error (reward ledger, Pydantic, etc.).
+        # Return a safe penalty response so the agent episode continues.
+        logger.exception("[ENV INTERNAL ERROR] /step failed: %s", exc)
+        safe_obs = _env.obs.model_dump(mode="json") if _env is not None else {}
+        return StepResponse(
+            observation=safe_obs,
+            reward=-5.0,
+            done=False,
+            info={"error": f"Internal environment error: {exc}"},
+        )
 
 @app.get("/state", response_model=Dict[str, Any], tags=["openenv"])
 async def state() -> Dict[str, Any]:

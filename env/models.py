@@ -45,7 +45,7 @@ import math
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 _log = logging.getLogger("crisis_env.models")
 
@@ -167,9 +167,8 @@ class TaskConfig(BaseModel):
 class ResourcePool(BaseModel):
     """A snapshot of emergency-unit counts for one pool (idle *or* busy).
 
-    Directive 5 Compliance: Schema Brutality Enforced. Utilizing StrictInt
-    and StrictBool. No janitorial coercion permitted. All hallucinations result
-    in immediate terminal penalties to maintain gradient purity.
+    Populated exclusively by the environment engine — never by raw LLM output.
+    Uses plain int with ge=0 constraint for simplicity and compatibility.
 
     Attributes:
         fire_units: Number of fire-fighting units in this pool.
@@ -177,9 +176,9 @@ class ResourcePool(BaseModel):
         police:     Number of police units in this pool.
     """
 
-    fire_units: StrictInt = Field(default=0, ge=0)
-    ambulances: StrictInt = Field(default=0, ge=0)
-    police: StrictInt = Field(default=0, ge=0)
+    fire_units: int = Field(default=0, ge=0)
+    ambulances: int = Field(default=0, ge=0)
+    police: int = Field(default=0, ge=0)
 
 
 class ActiveDeployment(BaseModel):
@@ -305,92 +304,119 @@ class Observation(BaseModel):
 class ZoneDispatch(BaseModel):
     """Dispatch instruction for a single zone within one simulation step.
 
-    **Strict Bouncer Mode** — Agentic Purity Enforcement
-    -------------------------------------------------------
-    This model enforces exact RL action-space boundaries (A_t ∈ A).  It does
-    NOT coerce, clean, or repair malformed LLM outputs.  Any output that is
-    not a perfect non-negative integer is immediately rejected with a
-    ``ValidationError``.  The environment catches that error and applies the
-    INVENTORY_BREACH terminal penalty.  There are NO silent janitors here.
+    **Resilient Bouncer Mode** — LLM-Tolerant Coercion with Hard Boundary Enforcement
+    ---------------------------------------------------------------------------------
+    This model coerces common LLM output patterns into valid types before
+    Pydantic validates them.  External LLMs (e.g. Nemotron 3 Super used in
+    Phase 2 Agentic Evaluation) commonly return:
+        - integers as floats (``3.0`` instead of ``3``)
+        - booleans as integers (``1``/``0`` instead of ``true``/``false``)
+        - booleans as strings (``"true"``/``"false"``)
 
-    Valid input contract:
-        dispatch_fire      : strict int  ≥ 0
-        dispatch_ambulance : strict int  ≥ 0
-        control_traffic    : strict bool
+    We coerce these to the correct Python types so minor format variance does
+    NOT trigger a ``ValidationError``.  Semantic violations (negative counts,
+    inventory breach) are still caught by the environment's hard guards.
 
-    Rejected inputs that previously passed (now fatal):
-        "3"   (string int)  → ValidationError
-        3.7   (float)       → ValidationError
-        -1    (negative)    → ValidationError
-        None  (missing)     → ValidationError
-        "yes" (string bool) → ValidationError
+    Accepted and coerced:
+        3.0   (float int)   → 3
+        3.7   (float)       → 3  (floor-truncated)
+        1     (int bool)    → True
+        0     (int bool)    → False
+        "true" / "false"   → True / False
+
+    Still rejected (no safe coercion possible):
+        "five"  (string)   → ValidationError
+        -1      (negative) → ValidationError (after coercion)
 
     Attributes:
-        dispatch_fire:      Fire units to dispatch (strict non-negative int).
-        dispatch_ambulance: Ambulance units to dispatch (strict non-negative int).
-        control_traffic:    Whether to deploy a police unit (strict bool).
+        dispatch_fire:      Fire units to dispatch (non-negative int).
+        dispatch_ambulance: Ambulance units to dispatch (non-negative int).
+        control_traffic:    Whether to deploy a police unit (bool).
     """
 
-    dispatch_fire: StrictInt = Field(
+    dispatch_fire: int = Field(
         default=0,
-        description="Fire units to dispatch. Must be a non-negative integer. Strings, floats, and None are rejected.",
+        description="Fire units to dispatch. Non-negative integer. Floats are floor-truncated.",
     )
-    dispatch_ambulance: StrictInt = Field(
+    dispatch_ambulance: int = Field(
         default=0,
-        description="Ambulance units to dispatch. Must be a non-negative integer. Strings, floats, and None are rejected.",
+        description="Ambulance units to dispatch. Non-negative integer. Floats are floor-truncated.",
     )
-    control_traffic: StrictBool = Field(
+    control_traffic: bool = Field(
         default=False,
-        description="Deploy one police unit for traffic control. Must be a strict Python bool (True/False). Strings and ints are rejected.",
+        description="Deploy one police unit for traffic control. Bool; 0/1 and 'true'/'false' are coerced.",
     )
 
     # ------------------------------------------------------------------
-    # Strict boundary validators — Agentic Purity Check
-    # RULE: These validators ONLY raise ValueError. They NEVER fix values.
+    # Coercing validators — type-safe ingestion before boundary checks
     # ------------------------------------------------------------------
 
-    @field_validator("dispatch_fire", mode="after")
+    @field_validator("dispatch_fire", "dispatch_ambulance", mode="before")
     @classmethod
-    def _ensure_fire_non_negative(cls, v: int) -> int:
-        """Reject negative fire dispatch counts — no clamping.
+    def _coerce_to_int(cls, v: Any) -> int:
+        """Coerce float/string representations to int, then enforce non-negative.
+
+        Handles the common pattern of external LLMs returning ``3.0`` or
+        ``"3"`` for integer fields.  Floor-truncates floats (3.7 → 3).
 
         Args:
-            v: The integer value after strict type enforcement.
+            v: Raw value from LLM JSON payload.
 
         Returns:
-            ``v`` unchanged if it is non-negative.
+            Non-negative ``int``.
 
         Raises:
-            ValueError: Immediately if ``v < 0``.  The LLM must correct its
-                own output.  The environment will not do it for the agent.
+            ValueError: If the value cannot be coerced or is negative.
         """
+        if isinstance(v, bool):
+            # bool is a subclass of int in Python — treat True/False as 1/0
+            return int(v)
+        if isinstance(v, float):
+            v = int(v)  # floor-truncate
+        if isinstance(v, str):
+            try:
+                v = int(float(v))  # "3" → 3, "3.7" → 3
+            except (ValueError, TypeError):
+                raise ValueError(
+                    f"Cannot coerce {v!r} to int for dispatch count."
+                )
+        if not isinstance(v, int):
+            raise ValueError(f"Expected int, got {type(v).__name__}: {v!r}")
         if v < 0:
             raise ValueError(
-                f"Action Space Violation (dispatch_fire): Expected >= 0, got {v}. "
-                "Negative dispatch counts are outside the valid action space A_t ∈ A."
+                f"Action Space Violation: Expected >= 0, got {v}. "
+                "Negative dispatch counts are outside the valid action space."
             )
         return v
 
-    @field_validator("dispatch_ambulance", mode="after")
+    @field_validator("control_traffic", mode="before")
     @classmethod
-    def _ensure_ambulance_non_negative(cls, v: int) -> int:
-        """Reject negative ambulance dispatch counts — no clamping.
+    def _coerce_to_bool(cls, v: Any) -> bool:
+        """Coerce int/string representations to bool.
+
+        External LLMs commonly return ``1``/``0`` or ``"true"``/``"false"``
+        for boolean fields.  This validator normalises all common patterns.
 
         Args:
-            v: The integer value after strict type enforcement.
+            v: Raw value from LLM JSON payload.
 
         Returns:
-            ``v`` unchanged if it is non-negative.
+            Python ``bool``.
 
         Raises:
-            ValueError: Immediately if ``v < 0``.
+            ValueError: If the value cannot be safely interpreted as a boolean.
         """
-        if v < 0:
-            raise ValueError(
-                f"Action Space Violation (dispatch_ambulance): Expected >= 0, got {v}. "
-                "Negative dispatch counts are outside the valid action space A_t ∈ A."
-            )
-        return v
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, int):
+            return bool(v)
+        if isinstance(v, str):
+            if v.lower() in ("true", "1", "yes"):
+                return True
+            if v.lower() in ("false", "0", "no"):
+                return False
+            raise ValueError(f"Cannot coerce string {v!r} to bool.")
+        raise ValueError(f"Expected bool, got {type(v).__name__}: {v!r}")
 
 
 class Action(BaseModel):
