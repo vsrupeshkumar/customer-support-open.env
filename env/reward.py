@@ -773,6 +773,19 @@ def calculate_step_reward(
         multi_obj_reward  # CRITICAL PATCH: Inject orphaned multi-objective bonus
     )
 
+    # 2. SANITIZATION LAYER: Round all floats to 4 decimal places for LLM token
+    #    efficiency. Strips IEEE 754 artifacts (e.g. -17.200000000000003) from
+    #    the JSON payload before Pydantic validation. The model_validator uses
+    #    math.isclose(abs_tol=1e-4) and remains untouched — rounding here is
+    #    strictly a presentation-layer concern upstream of the ledger.
+    base_dispatch_score    = round(base_dispatch_score, 4)
+    nlp_semantic_bonus_r   = round(0.0, 4)           # placeholder; populated downstream
+    waste_penalty_r        = round(0.0, 4)            # placeholder; populated downstream
+    efficiency_bonus       = round(efficiency_bonus, 4)
+    time_penalty           = round(time_penalty, 4)
+    multi_obj_reward       = round(multi_obj_reward, 4)
+    total_reward           = round(total_reward, 4)
+
     logger.info(
         "Step reward total=%.4f | dispatch_quality=%.4f trajectory_shaping=%.4f "
         "severity_delta=%.2f efficiency_bonus=%.4f time_penalty=%.2f multi_obj=%.4f "
@@ -783,11 +796,11 @@ def calculate_step_reward(
         len(current_state.zones),
     )
 
-    # 2. Construct the strict Pydantic ledger
+    # 3. Construct the strict Pydantic ledger
     step_reward = Reward(
         base_dispatch_score=base_dispatch_score,
-        nlp_semantic_bonus=0.0,   # populated by compute_reward after NLP grading
-        waste_penalty=0.0,        # populated by environment.py waste accumulator
+        nlp_semantic_bonus=nlp_semantic_bonus_r,  # populated by compute_reward after NLP grading
+        waste_penalty=waste_penalty_r,             # populated by environment.py waste accumulator
         efficiency_bonus=efficiency_bonus,
         time_penalty=time_penalty,
         multi_obj=multi_obj_reward,

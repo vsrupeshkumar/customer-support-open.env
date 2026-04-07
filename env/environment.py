@@ -752,8 +752,22 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
             step_multi_obj  # CRITICAL PATCH: Inject orphaned multi-objective bonus
         )
 
-        # Commit the corrected step reward to the cumulative episode total.
+        # Commit the corrected step reward to the cumulative episode total
+        # (use pre-rounded value so the accumulator remains precise).
         self._total_reward += reward
+
+        # 2. SANITIZATION LAYER: Round all floats to 4 decimal places for LLM
+        #    token efficiency. Strips IEEE 754 artifacts from the JSON payload
+        #    before Pydantic validation. math.isclose(abs_tol=1e-4) in the
+        #    model_validator is untouched — rounding here is a presentation-layer
+        #    concern only; the model_validator tolerates sub-1e-4 drift.
+        base_dispatch_reward  = round(base_dispatch_reward, 4)
+        step_nlp_bonus        = round(step_nlp_bonus, 4)
+        step_waste_penalty    = round(step_waste_penalty, 4)
+        step_efficiency_bonus = round(step_efficiency_bonus, 4)
+        step_time_penalty     = round(step_time_penalty, 4)
+        step_multi_obj        = round(step_multi_obj, 4)
+        reward                = round(reward, 4)
 
         logger.info(
             "[Step %d] Ruthless Utility: base=%.4f + nlp=%.4f - waste=%.4f "
@@ -771,7 +785,7 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
             wasted_dispatches=self._wasted_dispatches,
         )
 
-        # 2. Construct the strict Pydantic ledger — all 6 components populated.
+        # 3. Construct the strict Pydantic ledger — all 6 components populated.
         #    The verify_reward_ledger model_validator enforces:
         #      base + nlp - waste + efficiency - time + multi_obj == total_reward
         final_step_ledger = Reward(
