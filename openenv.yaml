@@ -10,16 +10,14 @@ author: "Anbu-00001"
 license: "MIT"
 
 metadata:
-  engine: "Meta Llama 3.3 via Groq"
+  engine: "HF Router (OpenAI-Compatible)"
   mathematical_standout:
     state_space:
-      definition: 'S \in [0, 1]^{12}'
+      definition: 'S \in [0, 1]^{16}'
       description: >
-        Normalized vector representing 12 critical crisis metrics: 
-        (Flood Level, Power Grid, Population Density, Fire Severity, 
-        Patient Criticality, Traffic Congestion, Wind Speed, 
-        Infrastructure Integrity, Supply Chain Latency, 
-        Communication Uptime, Medical Capacity, Unit Readiness).
+        Normalized vector representing 16 core simulation metrics: 
+        1 Global Weather, 9 Zone fields (3 Zones × Fire, Patient, Traffic), 
+        3 Idle resource pools, and 3 Busy resource pools.
     action_space:
       definition: 'A \in T \times U \times Z \times \mathbb{N}_0'
       description: >
@@ -80,26 +78,48 @@ observation_space:
 action_space:
   type: structured
   schema: "env.models.Action"
+  description: >
+    A structured dispatch decision for one simulation step.
+    The agent maps each active zone_id to a ZoneDispatch object specifying
+    how many fire units, ambulances, and police to send.
+    Total dispatched must NOT exceed idle_resources in each category
+    (Inventory Breach Guard: violation voids the action and applies -15 × severity penalty).
   fields:
-    type: 
-      type: enum
-      values: [dispatch, stabilize, control_traffic]
-    unit:
-      type: enum
-      values: [fire_truck, ambulance, police]
-    zone_id:
-      type: str
-    amount:
-      type: int
-      minimum: 0
+    allocations:
+      type: object
+      description: "Maps zone_id (str key) to a ZoneDispatch object. Include all zones."
+      required: true
+      value_schema:
+        dispatch_fire:
+          type: int
+          minimum: 0
+          maximum: 50
+          description: "Fire units to dispatch to this zone."
+        dispatch_ambulance:
+          type: int
+          minimum: 0
+          maximum: 50
+          description: "Ambulances to dispatch to this zone."
+        control_traffic:
+          type: bool
+          description: "true to deploy one police unit for traffic control."
+    public_broadcast_message:
+      type: [string, "null"]
+      description: >
+        Optional natural-language alert to citizens. Required when any zone
+        has HIGH/CATASTROPHIC fire or CRITICAL patients. Must name the zone,
+        hazard type, and include a directive verb (evacuate/shelter/avoid/warning).
 
 reward:
   type: scalar
   range: [-inf, +inf]
   components:
-    efficiency: "Dynamic payload scaling per discrete zone allocation"
-    hazard_penalty: "Penalty for unresolved or escalating incidents"
-    cascade_penalty: "Penalty for triggering cascading failure events"
+    base_dispatch_score: "Quality of resource allocation vs required thresholds per zone"
+    nlp_semantic_bonus: "Precision-recall scored broadcast message grader (can be negative)"
+    waste_penalty: "Severity-weighted over-dispatch accumulator (×2.0 calm / ×0.5 critical)"
+    efficiency_bonus: "Bonus for rapid multi-zone containment"
+    time_penalty: "Per-step cost when unresolved incidents remain active"
+    multi_obj: "Multi-objective POMDP term combining Δ-severity trajectory shaping"
 
 tasks:
   - name: "Single-Zone Emergency (Easy)"

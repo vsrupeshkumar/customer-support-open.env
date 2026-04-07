@@ -12,10 +12,10 @@ Agent Architecture
     - MODEL_NAME    → Model identifier (e.g. "gpt-4-turbo", a HF-hosted model).
 * Schema-injects the Pydantic ``Action`` model into the system prompt so the
   LLM understands the exact JSON structure required.
-* Forces ``response_format={"type": "json_object"}`` for guaranteed JSON output.
-* Implements a 3-retry loop with exponential back-off for transient failures.
-* Falls back to a safe zero-dispatch ``Action`` after exhausted retries — the
-  simulation NEVER crashes due to an LLM fault.
+* Enforces JSON output via system prompt (endpoint-agnostic; no response_format
+  parameter — compatible with HF Router, Groq, and vLLM backends).
+* Single-attempt per step (Directive 2: Agentic Purity — no retries, no fallbacks).
+* Missing token degrades gracefully via sentinel; ``[END]`` always emitted.
 
 Logging
 -------
@@ -51,8 +51,23 @@ MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
 # The Grader may inject via HF_TOKEN, while local testing may use GROQ_API_KEY or API_KEY
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or os.getenv("GROQ_API_KEY")
 
+# BUG-5 FIX: Do NOT raise at module level — that executes before run_episode's
+# try/finally, meaning [END] would never be emitted if the token is absent.
+# Instead we use a sentinel string so that:
+#   1. OpenAI(api_key="MISSING_TOKEN") initialises without error.
+#   2. The first client.chat.completions.create() call raises AuthenticationError
+#      (HTTP 401), which is a subclass of APIStatusError.
+#   3. get_action() catches it under `except Exception` → returns ("FAILED_ACTION", err).
+#   4. run_episode()'s finally block always emits [END] with score=0.0.
+# This guarantees M2M telemetry completeness even in misconfigured deployments.
 if not API_KEY:
-    raise ValueError("FATAL: No authentication token found. Ensure HF_TOKEN, API_KEY, or GROQ_API_KEY is injected.")
+    _missing_token_msg = (
+        "FATAL: No authentication token found. "
+        "Ensure HF_TOKEN, API_KEY, or GROQ_API_KEY is injected via environment variables."
+    )
+    # Emit to stderr so the evaluator log captures it; do NOT crash before [END].
+    print(f"[ERROR] {_missing_token_msg}", file=sys.stderr, flush=True)
+    API_KEY = "MISSING_TOKEN"  # sentinel — triggers AuthenticationError at first API call
 
 # Optional - image name resolution for from_docker_image()
 IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
@@ -71,7 +86,7 @@ from pydantic import ValidationError
 # ---------------------------------------------------------------------------
 client = OpenAI(
     base_url=API_BASE_URL,
-    api_key=API_KEY
+    api_key=API_KEY,
 )
 
 
@@ -383,11 +398,23 @@ class LLMAgent:
 
         t0 = time.monotonic()
 
+        # BUG-4 FIX: `response_format={"type": "json_object"}` is NOT universally
+        # supported by all backends behind router.huggingface.co/v1.
+        # If the endpoint rejects it with HTTP 400, every step raises APIStatusError
+        # and is processed as a hallucination, producing score ≈ 0.0 for all tasks.
+        #
+        # Mitigation: remove the parameter entirely and rely on the system prompt,
+        # which already enforces strict JSON-only output:
+        #   "Respond with ONLY a valid JSON object — no markdown fences, no explanations."
+        #
+        # Llama 3.3 70B Instruct follows system-prompt instructions faithfully, and
+        # the Pydantic model_validate_json() call below provides the structural guard.
+        # The endpoint-agnostic approach is safer for Phase 2 agentic evaluation where
+        # the evaluator may swap the model (e.g. Nemotron 3 Super).
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=self._history,                        # type: ignore[arg-type]
-            response_format={"type": "json_object"},       # guaranteed JSON output
-            temperature=0.2,                               # low temp for determinism
+            temperature=0.2,                               # low temp → near-deterministic JSON
             max_tokens=1024,
         )
 
@@ -558,10 +585,18 @@ def run_episode(agent: LLMAgent, task_id: int) -> None:
             else:
                 action_payload = "FAILED_ACTION"
 
+            # BUG-2 FIX: action_payload is already Action.model_dump(mode="json"),
+            # i.e. {"allocations": {...}, "public_broadcast_message": null}.
+            # Wrapping it in {"action": action_payload} sent:
+            #   {"action": {"allocations": {...}}}
+            # app.py calls Action(**data), so Pydantic received `action=` as an
+            # unknown extra field (silently ignored), producing allocations={} on
+            # every step — which the Anti-Exploit Guard penalises with −5.0/zone.
+            # Fix: pass action_payload directly as the JSON body.
             step_res = requests.post(
-                f"{ENV_URL}/step", 
-                json={"action": action_payload}, 
-                timeout=10
+                f"{ENV_URL}/step",
+                json=action_payload,
+                timeout=10,
             )
             step_res.raise_for_status()
             step_data = step_res.json()

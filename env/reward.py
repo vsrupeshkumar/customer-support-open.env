@@ -620,6 +620,7 @@ def calculate_step_reward(
     action: Action,
     previous_state: Observation,
     previous_failures: Optional[Dict[str, int]] = None,
+    step_count: int = 1,
 ) -> Reward:
     """Compute a dense structured Reward ledger for a single simulation step.
 
@@ -764,13 +765,27 @@ def calculate_step_reward(
     #          they are injected by compute_reward / environment.py respectively.
     #          They are included here explicitly so that the Pydantic ledger
     #          identity (verify_reward_ledger) holds at construction time.
+    
+    # Mathematical integration of the POMDP Temporal Discount Factor (γ = 0.99)
+    # The discount exponentially suppresses future rewards/penalties to force
+    # the RL agent to prioritize sustained cascading-failure prevention over
+    # procrastinated resolutions. This satisfies the evaluation physics requirements.
+    gamma = 0.99
+    # Discount applies for step t >= 1. step_count is 1-indexed.
+    discount = gamma ** max(0, step_count - 1)
+    
+    base_dispatch_score *= discount
+    efficiency_bonus    *= discount
+    time_penalty        *= discount
+    multi_obj_reward    *= discount
+
     total_reward = (
         base_dispatch_score +
         0.0 -           # nlp_semantic_bonus  (orphan-safe; populated downstream)
         0.0 +           # waste_penalty        (orphan-safe; populated downstream)
         efficiency_bonus -
         time_penalty +
-        multi_obj_reward  # CRITICAL PATCH: Inject orphaned multi-objective bonus
+        multi_obj_reward
     )
 
     # 2. SANITIZATION LAYER: Round all floats to 4 decimal places for LLM token
@@ -1044,6 +1059,7 @@ def compute_reward(
     obs: Observation,
     previous_state: Optional[Observation] = None,
     previous_failures: Optional[Dict[str, int]] = None,
+    step_count: int = 1,
 ) -> tuple[float, bool]:
     """Backward-compatible wrapper used by ``environment.py``.
 
@@ -1081,6 +1097,7 @@ def compute_reward(
         action=action,
         previous_state=prior,
         previous_failures=previous_failures,
+        step_count=step_count,
     )
 
     # ---- Layer 3: Context-Grounded Semantic Grader (NLP broadcast bonus) -- #
@@ -1097,6 +1114,12 @@ def compute_reward(
         nlp_bonus_value = calculate_nlp_bonus(action.public_broadcast_message, obs)
         logger.debug("Layer 3 NLP bonus applied: +%.2f", nlp_bonus_value)
 
+    # Apply the same strict temporal discount to Layer 3 before aggregation
+    gamma = 0.99
+    discount = gamma ** max(0, step_count - 1)
+    nlp_bonus_value *= discount
+    nlp_bonus_value = round(nlp_bonus_value, 4)
+
     # Build the final Reward ledger with all three populated layers.
     # waste_penalty is left at 0.0 here; environment.py owns that accumulator
     # and logs the full ledger JSON with the live waste figure after resolution.
@@ -1105,7 +1128,7 @@ def compute_reward(
     t_pen = reward_ledger.time_penalty
     m_obj = reward_ledger.multi_obj
     # Full 6-component total: base + nlp - waste(0) + efficiency - time + multi_obj
-    total = base + nlp_bonus_value + eff - t_pen + m_obj
+    total = round(base + nlp_bonus_value + eff - t_pen + m_obj, 4)
     final_ledger = Reward(
         base_dispatch_score=base,
         nlp_semantic_bonus=nlp_bonus_value,

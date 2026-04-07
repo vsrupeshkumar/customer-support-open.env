@@ -280,13 +280,9 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         self._total_incidents = self._count_incidents(self.obs)
         self._wasted_dispatches: float = 0.0  # Blocker #2: severity-weighted waste accumulator.
         self._prev_obs: Optional[Observation] = None  # Blocker #3: temporal shaping anchor.
-        # Dynamic Horizon Scaling: Ensure theoretical solvability
-        initial_zone_count = self._total_incidents
-        min_required_steps = int(initial_zone_count * 2.0) # Assume 2 steps per zone to resolve
-        exploration_buffer = 4
-        
-        # Scale episode boundary based on state complexity, with absolute upper bound of 25
-        self._max_steps = min(25, max(12, min_required_steps + exploration_buffer))
+        # Enforce static horizon scaling directly from the exact Task definition schemas
+        # to ensure 100% mathematical consistency with openenv.yaml (W-4 compliance)
+        self._max_steps = self._task.get_max_steps()
         self._step_count = 0
 
         # POMDP boundary: Track failure cascades internally here, NOT in the
@@ -529,6 +525,7 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
             action=action,
             previous_state=temporal_prior,
             previous_failures=self._zone_failures,
+            step_count=self._step_count,
         )
         # NOTE: we do NOT yet add this to self._total_reward here;
         # the final corrected reward (after waste subtraction) is committed below.
@@ -734,6 +731,12 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         # DO NOT clamp to zero — negative rewards are the intended gradient signal.
         # -----------------------------------------------------------------------
         step_waste_penalty: float = self._wasted_dispatches - _waste_before_step
+        
+        # Apply the same strict temporal discount to the environment's isolated waste penalty 
+        # so the Pydantic ledger verification identity perfectly balances across all 6 arrays
+        gamma = 0.99
+        discount = gamma ** max(0, self._step_count - 1)
+        step_waste_penalty *= discount
 
         # Pull Layer 3 components from the step_reward_ledger so the 6-component
         # Pydantic identity (verify_reward_ledger) holds in the final ledger too.

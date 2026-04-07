@@ -106,7 +106,7 @@ class EasyTask(Task):
     _IDLE_FIRE   = 5
     _IDLE_AMB    = 5
     _IDLE_POLICE = 3
-    _MAX_STEPS   = 8
+    _MAX_STEPS   = 12
 
     def generate_initial_observation(self, rng: random.Random) -> Observation:
         """Generate the deterministic Task 1 starting state.
@@ -190,7 +190,7 @@ class MediumTask(Task):
     _IDLE_FIRE   = 5
     _IDLE_AMB    = 3
     _IDLE_POLICE = 2
-    _MAX_STEPS   = 10
+    _MAX_STEPS   = 15
 
     # Scenario pools (weights must sum to 1.0 within each group).
     _FIRE_POOL  = [FireLevel.MEDIUM, FireLevel.HIGH]
@@ -277,7 +277,7 @@ class HardTask(Task):
     _IDLE_FIRE   = 8
     _IDLE_AMB    = 4
     _IDLE_POLICE = 2
-    _MAX_STEPS   = 12
+    _MAX_STEPS   = 25
 
     # Downtown fire options (seed-determined).
     _DT_FIRE_POOL = [FireLevel.HIGH, FireLevel.CATASTROPHIC]

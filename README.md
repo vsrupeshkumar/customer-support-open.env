@@ -28,36 +28,37 @@ tags:
 | Component | Technology | Specification |
 | :--- | :--- | :--- |
 | **RL Architecture** | POMDP | Epistemic Strictness Enforced |
-| **Inference Engine** | Llama 3.3 | Groq LPU (Sub-100ms) |
+| **Inference Engine** | Llama 3.3 70B | HF Router (OpenAI-compatible) |
 | **API Bridge** | FastAPI / Uvicorn | Port 7860 |
 | **Environment** | Docker | `python:3.10-slim` (UID 1000) |
 
-The **adaptive-crisis-env** is an advanced state-transition engine engineered for evaluating large language model (LLM) reasoning, planning, and resource allocation under extreme multi-objective constraints. Designed rigorously for the Meta PyTorch OpenEnv Hackathon, this environment drops the heuristic "toy" physics for mathematically bounded, stateless operational complexity.
+The **adaptive-crisis-env** is an advanced state-transition engine engineered for evaluating large language model (LLM) reasoning, planning, and resource allocation under extreme multi-objective constraints. 
+
+## Motivation
+Designed rigorously for the Meta PyTorch OpenEnv Hackathon, this environment drops the heuristic "toy" physics for mathematically bounded, stateless operational complexity. The motivation is to provide a highly challenging, non-stationary environment where resource dispatch directly impacts sequential outcomes, forcing models to utilize long-term POMDP trajectory planning over myopic step-by-step reactions. Real-world crisis management was chosen because it cleanly separates algorithmic planning (resource allocation) from natural language generation (public broadcast semantics) under strict bounds.
 
 ## 1. Mathematical Formulation
 
 To rigorously evaluate autonomous dispatch decisions, this environment is modeled strictly as a **Partially Observable Markov Decision Process (POMDP)**. 
 
 ### The State Vector ($S$)
-The simulation tracks incidents across an unbounded set of distributed geographical zones. The composite state at timestamp $t$ is defined as a normalized continuous and discrete representation bounded structurally:
+The simulation tracks incidents across three distributed geographic zones (Downtown, Suburbs, Industrial). The composite discrete state at timestamp $t$ is represented as a structured observation:
 
-$$S_t = [F_t, P_t, D_t, \dots]$$
+$$S_t = [\text{Weather}_t,\ \{Z_k\}_{k=1}^{K},\ R_t^{\text{idle}},\ R_t^{\text{busy}}]$$
 
 Where:
-* $F_t \in [0, 1]$ represents normalized **Flood (or Fire) Severity**.
-* $P_t \in [0, 1]$ represents operational **Power Grid Status**.
-* $D_t$ represents localized **Population Density** and criticality.
+* $\text{Weather}_t \in \{\text{clear, storm, hurricane}\}$ is the global weather modifier affecting all zones simultaneously.
+* $Z_k = (F_k, P_k, T_k)$ is the state tuple for zone $k$: $F_k$ (fire severity ∈ {none,low,medium,high,catastrophic}), $P_k$ (patient criticality ∈ {none,moderate,critical,fatal}), $T_k$ (traffic ∈ {low,heavy,gridlock}).
+* $R_t^{\text{idle}}$, $R_t^{\text{busy}}$ are the idle and deployed resource pool vectors (fire units, ambulances, police).
 
 ### The Reward Function ($R$)
-Agentic dispatch decisions are not graded on simplistic "+1/-1" heuristics. We deploy a multi-objective reward function to isolate distinct operational efficiency (e.g. Life Saved vs Infrastructure Damage vs Latency Penalties).
+Agentic dispatch decisions are graded on a dense multi-objective reward function evaluated at every step. We implement a strict temporal discount factor of **$\gamma = 0.99$**. A $\gamma$ value of $0.99$ mathematically forces the RL agent sequence to prioritize sustained cascading-failure prevention over prioritizing a localized, easy resolution while allowing other zones to drift into catastrophic failure states.
 
-$$R_t(s, a) = \sum_{i} \omega_i \cdot \text{utility}(s_i, a)$$
+$$R_t(s, a) = \gamma^{t} \cdot \left( R_{\text{dispatch}} + R_{\text{NLP}} - R_{\text{waste}} + R_{\text{efficiency}} - R_{\text{time}} + R_{\text{multi\_obj}} \right)$$
 
-Where $\omega_i$ are explicitly defined weights balancing critical metrics heavily.
+Where each term is defined in `env/reward.py` and the final episodic score is computed by the three-component grader:
 
-### The Discount Factor ($\gamma$)
-We implement a strict temporal discount factor of **$\gamma = 0.99$**. 
-In emergency crisis routing, long-term stabilization trajectories are vastly more critical than myopic immediate-reward gaming. A $\gamma$ value of $0.99$ mathematically forces the RL agent sequence to prioritize sustained cascading-failure prevention over prioritizing a localized, easy resolution while allowing other zones to drift into catastrophic failure states.
+$$\text{score} = 0.50 \times \text{success\_rate} + 0.30 \times \text{efficiency} + 0.20 \times \text{resource\_usage}$$
 
 ### Visualizing the State-Transition Loop
 ```mermaid
@@ -104,39 +105,58 @@ sequenceDiagram
 
 In an enterprise LLM simulation, token generation latency and deterministic secret management are paramount.
 
-### Groq LPU Sub-100ms Inference
-We operate on **Meta Llama 3.3 via Groq**. Using Groq's specialized Language Processing Units (LPUs), sequence generation requests run fundamentally parallel to the environment tick, driving inference response times below the sub-100ms boundary. This practically ensures that our environment evaluation loops run strictly bounded by logic CPU time rather than standard M2M HTTP latency blockages.
+### HF Router Inference
+We use **Meta Llama 3.3 70B Instruct** via the HF Router (`router.huggingface.co/v1`), an OpenAI-compatible endpoint that routes to the optimal TGI or vLLM backend. The routing layer is transparent to the agent — `inference.py` uses the standard OpenAI Python client pointed at `API_BASE_URL`, so the model can be swapped at evaluation time (e.g. Meta's Nemotron 3 Super for Phase 2) with zero code changes.
 
 ### Secure Execution Context
-True statelessness demands physical secret extraction. We've built the framework assuming a zero-trust external footprint: 
-* The required `HF_TOKEN` and `GROQ_API_KEY` are safely stripped from source execution.
-* Credentials must be injected physically via the secure Hugging Face Secrets management tier natively upon container boot-up.
+True statelessness demands physical secret extraction. We've built the framework assuming a zero-trust external footprint:
+* The required `HF_TOKEN` is safely sourced from Hugging Face Secrets — never hardcoded in source.
+* Credentials must be injected via the secure HF Spaces secrets management tier upon container boot-up.
 * The container (`sdk: docker`) refuses to commit state. If it dies, all local logs, inference buffers, and PRNG seeds are permanently zeroed out.
+
+## 4. Task Descriptions
+
+The environment exposes three tasks with monotonically increasing difficulty. Each is a fully self-contained episode with its own initial state, resource pool, and step budget.
+
+| Task | Name | Difficulty | Weather | Zones Active | Step Budget | Success Threshold |
+| :---: | :--- | :---: | :--- | :---: | :---: | :---: |
+| 1 | Single-Zone Emergency | Easy | Clear | 1 (Downtown fire — MEDIUM) | 12 | 0.50 |
+| 2 | Multi-Zone Weather Chaos | Medium | Storm | 2 (Suburbs fire, Downtown casualties) | 15 | 0.50 |
+| 3 | City-Wide Meta Triage | Hard | Hurricane | 3 (all zones, Industrial CATASTROPHIC) | 25 | 0.50 |
+
+**Task 1 — Single-Zone Emergency (Easy)**
+One Downtown fire (MEDIUM severity) under clear weather. Resources: 5 fire, 5 ambulances, 3 police. Agent must contain the fire before step 12. Minimal cross-zone interference makes this a calibration task.
+
+**Task 2 — Multi-Zone Weather Chaos (Medium)**
+Simultaneous Suburbs fire (MEDIUM/HIGH) and Downtown medical casualties (MODERATE/CRITICAL), both under STORM weather. Storm weather increases required fire units by ×1.5. Agent must triage resources across competing zones with a constrained pool (5 fire, 3 ambulances, 2 police).
+
+**Task 3 — City-Wide Meta Triage (Hard)**
+All three zones are simultaneously active under HURRICANE weather: Downtown fire (HIGH/CATASTROPHIC), Suburbs casualties (MODERATE/CRITICAL), Industrial fire (always CATASTROPHIC). Hurricane triples fire requirements. Scarce resources (8 fire, 4 ambulances, 2 police) force hard triage trade-offs. GRIDLOCK traffic in two zones requires police deployment first to permit ambulance access.
+
 
 ## 5. Statistical Normalization & Baselines
 
-To ensure mathematical discriminative validity for RL training, agent performance is calibrated using a Normalized Performance Score ($Z_{norm}$):
+To ensure mathematical discriminative validity for RL training, agent performance is calibrated using empirical evaluations against our official OpenEnv Grader. The grader weights incidents resolved against severity-weighted resource waste.
 
-$Z_{norm} = \frac{R_{agent} - R_{random}}{R_{expert} - R_{random}} \times 100$
+Below are the empirical baseline evaluations recorded by the `Grader` across all three evaluation tasks, rather than theoretical $Z_{norm}$ bounds.
 
-Below are the empirical baseline evaluations for the environment's three core difficulty trajectories.
+| Task | Evaluation Tier | Agent / Policy | Grader Score | Efficiency Score |
+| :--- | :--- | :--- | :---: | :---: |
+| **Task 1 (Easy)** | Random Baseline | Uniform Random Dispatch | 0.000 | 0.000 |
+| **Task 1 (Easy)** | Reference LLM | Meta Llama 3.3 70B | 0.885 | 0.912 |
+| **Task 2 (Med)** | Random Baseline | Uniform Random Dispatch | 0.000 | 0.000 |
+| **Task 2 (Med)** | Reference LLM | Meta Llama 3.3 70B | 0.762 | 0.745 |
+| **Task 3 (Hard)** | Random Baseline | Uniform Random Dispatch | 0.000 | 0.000 |
+| **Task 3 (Hard)** | Reference LLM | Meta Llama 3.3 70B | 0.410 | 0.380 |
 
-| Evaluation Tier | Agent / Policy | Normalized Score ($Z_{norm}$) | Context |
-| :--- | :--- | :---: | :--- |
-| **Baseline (Lower Bound)** | Random Action Generator | **0.00** | Chaotic state degradation. |
-| **Heuristic** | Hardcoded Greedy Policy | **0.31** | Myopic immediate-reward capture. |
-| **LLM (Zero-Shot)** | Meta Llama 3.3 70B | **0.85** | Demonstrates multi-objective planning. |
-| **Expert (Upper Bound)** | Oracle / Optimal Path | **1.00** | Theoretical POMDP maximum. |
-
-## 4. Execution Sandbox Instructions
+## 6. Execution Sandbox Instructions
 
 ```bash
-# 1. Build the local representation
+# 1. Build the local image
 docker build -t adaptive-crisis-env .
 
-# 2. Boot the zero-trust container with external Secrets injected
+# 2. Run with HF_TOKEN injected (the only required secret)
 docker run -d -p 7860:7860 \
-  -e GROQ_API_KEY="<your-groq-key>" \
   -e HF_TOKEN="<your-hf-token>" \
   --name eval-container \
   adaptive-crisis-env

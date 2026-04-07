@@ -148,8 +148,8 @@ async def reset(request: Request) -> Dict[str, Any]:
 
     try:
         _env = CrisisManagementEnv(task_id=task_id, seed=seed)
-        obs, _ = _env.reset(seed=seed)
-        logger.info("Environment reset: task_id=%d seed=%s", task_id, seed)
+        obs = _env.obs  # Access the cleanly initialized state instead of double-calling reset
+        logger.info("Environment initialized: task_id=%d seed=%s", task_id, seed)
 
         # The Mathematical Standout: State Entropy Calculation
         zones = obs.zones.values()
