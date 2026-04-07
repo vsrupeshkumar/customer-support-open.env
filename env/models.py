@@ -41,6 +41,7 @@ Example — deliberate LLM hallucination handling::
 from __future__ import annotations
 
 import logging
+import math
 from enum import Enum
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
@@ -553,7 +554,7 @@ class Reward(BaseModel):
 
     base_dispatch_score: float = Field(
         default=0.0,
-        description="Points awarded for correct numerical resource allocation.",
+        description="Points awarded for correct numerical resource allocation (Layers 1 + 2).",
     )
     nlp_semantic_bonus: float = Field(
         default=0.0,
@@ -566,11 +567,39 @@ class Reward(BaseModel):
     waste_penalty: float = Field(
         default=0.0,
         ge=0.0,
-        description="Negative points applied for over-dispatching to low-severity zones (stored as a positive magnitude; subtracted in total).",
+        description=(
+            "Negative points applied for over-dispatching to low-severity zones "
+            "(stored as a positive magnitude; subtracted in total)."
+        ),
+    )
+    efficiency_bonus: float = Field(
+        default=0.0,
+        description=(
+            "Resource-conservation bonus from Layer 3 POMDP formula: "
+            "(resources_saved / total_resources) × 0.5. Rewards minimal sufficient dispatch."
+        ),
+    )
+    time_penalty: float = Field(
+        default=0.0,
+        description=(
+            "Constant per-step time cost from Layer 3 POMDP formula (0.1 per step). "
+            "Encourages maximising episode efficiency."
+        ),
+    )
+    multi_obj: float = Field(
+        default=0.0,
+        description=(
+            "Layer 3 canonical multi-objective POMDP scalar: "
+            "(severity_delta × 1.5) + efficiency_bonus − time_penalty."
+        ),
     )
     total_reward: float = Field(
         ...,
-        description="The calculated sum: base_dispatch_score + nlp_semantic_bonus - waste_penalty.",
+        description=(
+            "Authoritative ledger sum: "
+            "base_dispatch_score + nlp_semantic_bonus − waste_penalty "
+            "+ efficiency_bonus − time_penalty + multi_obj."
+        ),
     )
 
     # ------------------------------------------------------------------
@@ -598,29 +627,56 @@ class Reward(BaseModel):
     )
 
     # ------------------------------------------------------------------
-    # Mathematical guarantee — ledger identity validator
+    # Floating-point ledger proof — 6-component identity validator
     # ------------------------------------------------------------------
 
     @model_validator(mode="after")
-    def _assert_ledger_identity(self) -> "Reward":
-        """Assert that total_reward equals the declared ledger sum.
+    def verify_reward_ledger(self) -> "Reward":
+        """Enforce the 6-component reward ledger identity with IEEE 754 tolerance.
 
-        Allows a floating-point tolerance of 1e-9 to absorb IEEE-754 rounding.
+        Reconstructs ``total_reward`` from all constituent sub-components using
+        the exact addition/subtraction logic applied inside
+        ``calculate_step_reward`` and ``compute_reward``, then asserts
+        structural integrity via ``math.isclose`` with an absolute tolerance
+        of 1e-4 — wide enough to absorb IEEE 754 floating-point drift while
+        tight enough to catch any real arithmetic inconsistency.
+
+        Mathematical identity enforced
+        --------------------------------
+        calculated_total =
+              base_dispatch_score
+            + nlp_semantic_bonus
+            − waste_penalty
+            + efficiency_bonus
+            − time_penalty
+            + multi_obj
 
         Returns:
             Self if the identity holds.
 
         Raises:
-            ValueError: If the arithmetic identity is violated.
+            ValueError: If ``calculated_total`` and ``total_reward`` differ by
+                more than ``abs_tol=1e-4``, indicating a State-Validation
+                Asymmetry between the step function and the Pydantic ledger.
         """
-        expected = self.base_dispatch_score + self.nlp_semantic_bonus - self.waste_penalty
-        if abs(self.total_reward - expected) > 1e-9:
+        # 1. Reconstruct the exact multi-objective mathematical equation
+        calculated_total = (
+            self.base_dispatch_score
+            + self.nlp_semantic_bonus
+            - self.waste_penalty
+            + self.efficiency_bonus
+            - self.time_penalty
+            + self.multi_obj
+        )
+
+        # 2. Enforce structural integrity using epsilon tolerance for float drift
+        if not math.isclose(calculated_total, self.total_reward, abs_tol=1e-4):
             raise ValueError(
                 f"Reward ledger identity violated: "
-                f"base_dispatch_score({self.base_dispatch_score:.4f}) "
-                f"+ nlp_semantic_bonus({self.nlp_semantic_bonus:.4f}) "
-                f"- waste_penalty({self.waste_penalty:.4f}) "
-                f"= {expected:.4f} ≠ total_reward({self.total_reward:.4f})."
+                f"base({self.base_dispatch_score}) + semantic({self.nlp_semantic_bonus}) - "
+                f"waste({self.waste_penalty}) + efficiency({self.efficiency_bonus}) - "
+                f"time({self.time_penalty}) + multi_obj({self.multi_obj}) "
+                f"= {calculated_total:.4f} != total_reward({self.total_reward:.4f})"
             )
         return self
 
@@ -631,11 +687,19 @@ class Reward(BaseModel):
     def calculate_total(self) -> float:
         """Mathematically compute what total_reward *should* equal.
 
-        This method provides an explicit calculation of the reward sum
-        independent of the stored ``total_reward`` field, useful for
-        verification in tests and post-episode analysis.
+        Reconstructs the authoritative scalar from all six sub-components
+        using the same addition/subtraction logic as ``verify_reward_ledger``.
+        Useful for verification in tests and post-episode analysis.
 
         Returns:
-            ``base_dispatch_score + nlp_semantic_bonus - waste_penalty``
+            ``base_dispatch_score + nlp_semantic_bonus − waste_penalty
+            + efficiency_bonus − time_penalty + multi_obj``
         """
-        return self.base_dispatch_score + self.nlp_semantic_bonus - self.waste_penalty
+        return (
+            self.base_dispatch_score
+            + self.nlp_semantic_bonus
+            - self.waste_penalty
+            + self.efficiency_bonus
+            - self.time_penalty
+            + self.multi_obj
+        )

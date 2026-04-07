@@ -775,6 +775,9 @@ def calculate_step_reward(
         base_dispatch_score=base_dispatch_score,
         nlp_semantic_bonus=0.0,   # populated by compute_reward after NLP grading
         waste_penalty=0.0,        # populated by environment.py waste accumulator
+        efficiency_bonus=efficiency_bonus,
+        time_penalty=time_penalty,
+        multi_obj=multi_obj_reward,
         total_reward=total_reward,
         dispatch_quality=dispatch_quality_total,
         trajectory_shaping=trajectory_shaping_total,
@@ -1071,11 +1074,18 @@ def compute_reward(
     # waste_penalty is left at 0.0 here; environment.py owns that accumulator
     # and logs the full ledger JSON with the live waste figure after resolution.
     base = reward_ledger.base_dispatch_score
-    total = base + nlp_bonus_value  # waste_penalty deduction tracked separately
+    eff   = reward_ledger.efficiency_bonus
+    t_pen = reward_ledger.time_penalty
+    m_obj = reward_ledger.multi_obj
+    # Full 6-component total: base + nlp - waste(0) + efficiency - time + multi_obj
+    total = base + nlp_bonus_value + eff - t_pen + m_obj
     final_ledger = Reward(
         base_dispatch_score=base,
         nlp_semantic_bonus=nlp_bonus_value,
         waste_penalty=0.0,
+        efficiency_bonus=eff,
+        time_penalty=t_pen,
+        multi_obj=m_obj,
         total_reward=total,
         dispatch_quality=reward_ledger.dispatch_quality,
         trajectory_shaping=reward_ledger.trajectory_shaping,
