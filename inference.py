@@ -39,16 +39,23 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Global Configuration & Environment (No-Default Rule for Secrets)
 # ---------------------------------------------------------------------------
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
-HF_TOKEN = os.getenv("HF_TOKEN")
+# MLOps Compliant Routing Defaults
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.3-70B-Instruct")
+# Cascading Secret Resolution
+# The Grader may inject via HF_TOKEN, while local testing may use GROQ_API_KEY or API_KEY
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or os.getenv("GROQ_API_KEY")
 
-# Optional - if you use from_docker_image():
-LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+if not API_KEY:
+    raise ValueError("FATAL: No authentication token found. Ensure HF_TOKEN, API_KEY, or GROQ_API_KEY is injected.")
+
+# Optional - image name resolution for from_docker_image()
+IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
 
 ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 
@@ -56,7 +63,7 @@ ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
 # Third-party imports
 # ---------------------------------------------------------------------------
 import requests
-from openai import OpenAI, APIConnectionError, APIStatusError, APITimeoutError
+from openai import APIConnectionError, APIStatusError, APITimeoutError
 from pydantic import ValidationError
 
 # ---------------------------------------------------------------------------
@@ -64,7 +71,7 @@ from pydantic import ValidationError
 # ---------------------------------------------------------------------------
 client = OpenAI(
     base_url=API_BASE_URL,
-    api_key=HF_TOKEN
+    api_key=API_KEY
 )
 
 
@@ -97,16 +104,28 @@ logging.basicConfig(
 logger = logging.getLogger("crisis_env.agent")
 
 
-# M2M Protocol Functions (Zero Noise, stdout only)
-def emit_start(task_name: str):
-    print(f"[START] Task: {task_name}", file=sys.stdout, flush=True)
+# M2M Protocol Functions — strict key=value, no colons, no pipes (Meta Grader regex)
+def emit_start(task_name: str, env_bench: str, model: str) -> None:
+    print(f"[START] task={task_name} env={env_bench} model={model}", file=sys.stdout, flush=True)
 
-def emit_step(step_num: int, obs_dict: dict, action_str: str, reward: float):
-    # Mathematical precision: ensure reward is formatted as a float
-    print(f"[STEP] Step: {step_num} | Obs: {obs_dict} | Action: {action_str} | Reward: {float(reward):.2f}", file=sys.stdout, flush=True)
+def emit_step(step_num: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    # Safely map Python None or empty string -> "null" per reference script
+    error_val = error if error else "null"
+    print(
+        f"[STEP] step={step_num} action={action} reward={reward:.2f} done={str(done).lower()} error={error_val}",
+        file=sys.stdout,
+        flush=True,
+    )
 
-def emit_end(score: float):
-    print(f"[END] Score: {float(score):.2f}", file=sys.stdout, flush=True)
+def emit_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    # Discrete episodic trajectory: comma-separated .2f per-step rewards
+    # Note: Reference script uses .3f for score to ensure precision in evaluation
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
+        file=sys.stdout,
+        flush=True,
+    )
 
 
 # ===========================================================================
@@ -244,11 +263,6 @@ class LLMAgent:
             logger.warning(
                 "API_BASE_URL is not set. Falling back to OpenAI default endpoint. "
                 "Set API_BASE_URL in .env for custom inference servers."
-            )
-        if not HF_TOKEN:
-            logger.error(
-                "HF_TOKEN is not set. API calls will fail with 401 Unauthorized. "
-                "Provide HF_TOKEN in .env or as an environment variable."
             )
 
         logger.info(
@@ -500,7 +514,7 @@ def run_episode(agent: LLMAgent, task_id: int) -> None:
     obs = Observation(**obs_data)
     metrics = MetricsTracker()
 
-    emit_start(str(task_id))
+    emit_start(task_name=str(task_id), env_bench="adaptive-crisis-env", model=MODEL_NAME)
 
     rewards:     List[float] = []
     step_count:  int         = 0
@@ -508,65 +522,85 @@ def run_episode(agent: LLMAgent, task_id: int) -> None:
     success:     bool        = False
     is_done:     bool        = False
 
-    while not is_done:
-        step_count += 1
-
-        # ---- Introspective reasoning (logged before action) ----------------
-        critical, risk, strategy = _assess_situation(obs)
-        # Removed log_think to comply with M2M stream segregation
-
-        # ---- LLM action decision -------------------------------------------
-        try:
-            action, step_error = agent.get_action(obs, step_count)
-            if action == "FAILED_ACTION":
-                action_json_str = '"FAILED_ACTION"'
-            else:
-                action_json_str = json.dumps(
-                    action.model_dump(mode="json"), separators=(",", ":")
-                )
-        except StructuralHallucinationError as e:
-            action = e
-            step_error = str(e)
-            action_json_str = '"FAILED_ACTION"'
-
-        # ---- Environment step ----------------------------------------------
-        step_res = requests.post(
-            f"{ENV_URL}/step", 
-            json={"action": action.model_dump(mode="json") if action != "FAILED_ACTION" else "FAILED_ACTION"}, 
-            timeout=10
-        )
-        step_res.raise_for_status()
-        step_data = step_res.json()
-
-        obs = Observation(**step_data["observation"])
-        reward = float(step_data["reward"])
-        # Safely extract done, accommodating both app.py's format and legacy format
-        done = step_data.get("done", step_data.get("terminated", False) or step_data.get("truncated", False))
-        info = step_data.get("info", {})
+    # Guaranteed Terminal Telemetry Architecture
+    try:
+        # Initialize defaults in case of a step 0 crash
+        final_score = 0.0
+        is_success = False
         
-        is_done = done
-        rewards.append(float(reward))
-        metrics.update(reward, action, obs, done)
+        while not is_done:
+            step_count += 1
 
-        emit_step(
-            step_num=step_count,
-            obs_dict=obs.model_dump(mode="json"),
-            action_str=action_json_str,
-            reward=float(reward),
+            # ---- Introspective reasoning (logged before action) ----------------
+            critical, risk, strategy = _assess_situation(obs)
+
+            # ---- LLM action decision -------------------------------------------
+            try:
+                action, step_error = agent.get_action(obs, step_count)
+                if action == "FAILED_ACTION":
+                    action_json_str = '"FAILED_ACTION"'
+                else:
+                    if hasattr(action, "model_dump"):
+                        action_json_str = json.dumps(
+                            action.model_dump(mode="json"), separators=(",", ":")
+                        )
+                    else:
+                        action_json_str = str(action)
+            except StructuralHallucinationError as e:
+                action = e
+                step_error = str(e)
+                action_json_str = '"FAILED_ACTION"'
+
+            # ---- Environment step ----------------------------------------------
+            # Prevent AttributeError by safely type-checking the action before logging
+            if hasattr(action, "model_dump"):
+                action_payload = action.model_dump(mode="json")
+            else:
+                action_payload = "FAILED_ACTION"
+
+            step_res = requests.post(
+                f"{ENV_URL}/step", 
+                json={"action": action_payload}, 
+                timeout=10
+            )
+            step_res.raise_for_status()
+            step_data = step_res.json()
+
+            obs = Observation(**step_data["observation"])
+            reward = float(step_data["reward"])
+            # Safely extract done, accommodating both app.py's format and legacy format
+            done = step_data.get("done", step_data.get("terminated", False) or step_data.get("truncated", False))
+            info = step_data.get("info", {})
+            
+            is_done = done
+            rewards.append(float(reward))
+            metrics.update(reward, action, obs, done)
+
+            emit_step(
+                step_num=step_count,
+                action=action_json_str,
+                reward=float(reward),
+                done=bool(is_done),
+                error=step_error if isinstance(step_error, str) else None,
+            )
+
+            if done:
+                final_score = float(info.get("score", 0.0))
+                is_success = final_score >= 0.50
+                break
+
+    finally:
+        # MATHEMATICAL GUARANTEE: Always emit terminal state to unblock MLOps supervisor
+        emit_end(
+            success=is_success, 
+            steps=step_count, 
+            score=final_score, 
+            rewards=rewards
         )
-
-        if done:
-            final_score = float(info.get("score", 0.0))
-            success     = final_score >= 0.5
-            break
-
-    # ---- Episode summary (OpenEnv structured log line) --------------------
-    summary = metrics.get_summary()
-    emit_end(final_score)
-    logger.info(
-        "=== Task %d complete | success=%s | score=%.3f | steps=%d ===",
-        task_id, success, final_score, step_count,
-    )
+        logger.info(
+            "=== Task %d complete | success=%s | score=%.3f | steps=%d ===",
+            task_id, is_success, final_score, step_count,
+        )
 
     # -------------------------------------------------------------------------
     # Clean sys.stdout for Meta Grader Compliance

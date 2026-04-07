@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException, Request
 load_dotenv()
 
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -38,9 +38,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("crisis_env.server")
 
-def log_event(tag: str, message: Dict[str, Any]):
-    """Helper for evaluating logs ensuring precise formatted markers."""
-    print(f"[{tag}] {json.dumps(message)}")
+def log_event(tag: str, message: dict):
+    """Strict M2M key=value emitter for START/END grader markers (server-side)."""
+    kv = " ".join(f"{k}={v}" for k, v in message.items())
+    print(f"[{tag}] {kv}", flush=True)
 
 # ---------------------------------------------------------------------------
 # Application
@@ -149,9 +150,6 @@ async def reset(request: Request) -> Dict[str, Any]:
         _env = CrisisManagementEnv(task_id=task_id, seed=seed)
         obs, _ = _env.reset(seed=seed)
         logger.info("Environment reset: task_id=%d seed=%s", task_id, seed)
-        
-        # Reset custom reward tracking
-        _env._custom_cumulative_reward = 0.0
 
         # The Mathematical Standout: State Entropy Calculation
         zones = obs.zones.values()
@@ -171,7 +169,7 @@ async def reset(request: Request) -> Dict[str, Any]:
         obs_dict["Environment_Complexity"] = round(entropy, 4)
 
         # Log EVENT START
-        log_event("START", {"task_id": task_id, "seed": seed, "entropy": round(entropy, 4)})
+        log_event("START", {"task": task_id, "seed": seed, "entropy": round(entropy, 4)})
         
         return obs_dict
     except Exception as exc:
@@ -180,91 +178,27 @@ async def reset(request: Request) -> Dict[str, Any]:
 
 @app.post("/step", response_model=StepResponse, tags=["openenv"])
 async def step(request: Request) -> StepResponse:
+    """Pure dumb router — POMDP math lives exclusively in env/reward.py."""
     env = _get_env()
     try:
         data = await request.json()
         action = Action(**data)
     except Exception as e:
-        # Schema resilience: use StructuralHallucinationError instead of 422
         action = StructuralHallucinationError(str(e))
-        
-    try:
-        # Get prior observation to calculate specific reward metrics
-        prev_obs = getattr(env, "_prev_obs", None)
-        if prev_obs is None:
-            prev_obs = env.obs
 
-        obs, orig_reward, terminated, truncated, info = env.step(action)
+    try:
+        obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
-        # Reward Function Enforcement: Multi-Objective Reward Function
-        w1, w2, w3 = 10.0, 5.0, 1.0
-        life_saved = 0.0
-        infrastructure_damage = 0.0
-        time_penalty = 1.0
+        logger.info("step reward=%.4f done=%s", reward, done)
 
-        # -------------------------------------------------------------------------
-        # Dense Reward Gradients via State-Shift Deltas (S_{t-1} - S_t)
-        # -------------------------------------------------------------------------
-        # This replaces the binary reward logic with continuous gradient mapping.
-        # It calculates exact numerical deltas for medical and fire metrics,
-        # ensuring full compliance with OpenEnv learning mechanics.
-        # -------------------------------------------------------------------------
-        sev_map = {
-            "none": 0, 
-            "low": 1, 
-            "moderate": 2, 
-            "medium": 2, 
-            "high": 3, 
-            "critical": 4, 
-            "catastrophic": 5,
-            "fatal": 5
-        }
-
-        for z_id, z_state in obs.zones.items():
-            prev_z = prev_obs.zones.get(z_id)
-            if prev_z:
-                # Dense Gradient Delta for Medical Stabilization
-                prev_pat = sev_map.get(prev_z.patient.value, 0)
-                curr_pat = sev_map.get(z_state.patient.value, 0)
-                life_saved += (prev_pat - curr_pat)
-
-                # Dense Gradient Delta for Fire Mitigation
-                prev_fire = sev_map.get(prev_z.fire.value, 0)
-                curr_fire = sev_map.get(z_state.fire.value, 0)
-                infrastructure_damage += (curr_fire - prev_fire)
-            else:
-                # Penalize newly uncovered dangers using their absolute severity baseline
-                infrastructure_damage += sev_map.get(z_state.fire.value, 0)
-
-        multi_obj_reward = (w1 * life_saved) - (w2 * infrastructure_damage) - (w3 * time_penalty)
-
-        if not hasattr(env, "_custom_cumulative_reward"):
-            env._custom_cumulative_reward = 0.0
-        env._custom_cumulative_reward += float(multi_obj_reward)
-        logger.info("Step: multi_obj_reward=%.3f done=%s", multi_obj_reward, done)
-
-        # Logging Protocol: Action Effect
-        action_effect_json = {
-            "life_saved": life_saved,
-            "infrastructure_damage": infrastructure_damage,
-            "time_penalty": time_penalty,
-            "step_reward": multi_obj_reward
-        }
-        log_event("STEP", action_effect_json)
-
-        # Logging Protocol: Final Reward
         if done:
             success = info.get("resolved", 0) == info.get("total", 0)
-            final_reward_json = {
-                "final_reward": env._custom_cumulative_reward,
-                "success": success
-            }
-            log_event("END", final_reward_json)
+            log_event("END", {"success": str(success).lower(), "score": info.get("score", 0.0)})
 
         return StepResponse(
             observation=obs.model_dump(mode="json"),
-            reward=float(multi_obj_reward),
+            reward=float(reward),
             done=done,
             info=info,
         )

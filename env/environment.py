@@ -280,9 +280,14 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         self._total_incidents = self._count_incidents(self.obs)
         self._wasted_dispatches: float = 0.0  # Blocker #2: severity-weighted waste accumulator.
         self._prev_obs: Optional[Observation] = None  # Blocker #3: temporal shaping anchor.
-        # Directive 4: reset private step counter; max_steps from task config.
-        self._step_count: int = 0
-        self._max_steps: int = self._task.get_max_steps()
+        # Dynamic Horizon Scaling: Ensure theoretical solvability
+        initial_zone_count = self._total_incidents
+        min_required_steps = int(initial_zone_count * 2.0) # Assume 2 steps per zone to resolve
+        exploration_buffer = 4
+        
+        # Scale episode boundary based on state complexity, with absolute upper bound of 25
+        self._max_steps = min(25, max(12, min_required_steps + exploration_buffer))
+        self._step_count = 0
 
         # POMDP boundary: Track failure cascades internally here, NOT in the
         # public Observation model which the agent receives.
@@ -542,6 +547,23 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
             # the hazard level that the agent actually faced this step.
             pre_fire_level  = zone_state.fire
             pre_patient_level = zone_state.patient
+
+            # Anti-Exploit Guard: Zero-Resource Action Rejection
+            has_active_hazard = (pre_fire_level != FireLevel.NONE or 
+                                 pre_patient_level not in (PatientLevel.NONE, PatientLevel.FATAL) or 
+                                 zone_state.traffic != TrafficLevel.LOW)
+            is_zero_dispatch = (dispatch.dispatch_fire == 0 and 
+                                dispatch.dispatch_ambulance == 0 and 
+                                not dispatch.control_traffic)
+            
+            if has_active_hazard and is_zero_dispatch:
+                logger.warning(
+                    "[Step %d] LAZY AGENT EXPLOIT CAUGHT in %s: Zero resources dispatched to active hazard. Escalating crisis and penalizing.",
+                    self._step_count, zone_id
+                )
+                self._escalate_zone(zone_state)
+                base_dispatch_reward -= 5.0
+                continue
 
             used_fire, used_amb, used_pol = self._commit_allocation(
                 zone_id, zone_state, dispatch

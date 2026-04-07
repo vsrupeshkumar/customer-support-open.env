@@ -627,8 +627,7 @@ def calculate_step_reward(
     function** — calling it twice with identical arguments always produces the
     same result, and it has no observable side-effects.
 
-    The reward is computed in two independent layers that are summed into the
-    ``base_dispatch_score`` ledger line:
+    The reward is computed in three complementary layers:
 
     **Layer 1 — Instantaneous Dispatch Quality** (per-zone via ``_zone_reward``)
         Evaluates whether the agent's *current* dispatch is correct, wasteful,
@@ -637,17 +636,25 @@ def calculate_step_reward(
         IGNORE_INCIDENT, DELAYED_HIGH_SEVERITY, SAVE_CRITICAL_CASE.
 
     **Layer 2 — Trajectory-Aware Δ-Severity Shaping** (per-zone via
-        ``_trajectory_shaping``)
+        ``_trajectory_reward``)
         Evaluates how the world *changed* between the previous step and this
         step, providing an early dense gradient signal for containment vs.
         escalation.  Signals: STABILIZATION_BONUS (+2.0), DEGRADATION_PENALTY
         (-3.0).
 
-    The two layers are designed to be complementary:
-    * Layer 1 rewards the agent for *what it does*.
-    * Layer 2 rewards the agent for *the consequences of what it did*.
-    Together they create a rich, non-sparse gradient landscape that guides
-    policy learning far more efficiently than terminal-only reward.
+    **Layer 3 — Multi-Objective POMDP Formula** (globally authoritative scalar)
+        The canonical crisis-objective reward defined here — NOT in app.py.
+        This enforces strict POMDP architectural purity: the API layer is a
+        dumb router; all math lives in the environment.
+
+            severity_delta    = Σ (previous_rank - current_rank) over all zones
+                                (fire + patient dimensions)
+            efficiency_bonus  = (resources_saved / total_resources) × 0.5
+            time_penalty      = 0.1   (constant per-step cost)
+            multi_obj_reward  = (severity_delta × 1.5) + efficiency_bonus
+                                − time_penalty
+
+        Final reward = Layer1 + Layer2 + Layer3 (unified, single authority).
 
     Args:
         current_state:  The ``Observation`` *after* the tick (step counter has
@@ -693,13 +700,74 @@ def calculate_step_reward(
         dispatch_quality_total += base_contribution
         trajectory_shaping_total += shaping_contribution
 
-    # base_dispatch_score = Layer 1 + Layer 2 (no NLP yet; that is Layer 3)
+    # base_dispatch_score = Layer 1 + Layer 2
     base_dispatch_score = dispatch_quality_total + trajectory_shaping_total
-    total_reward = base_dispatch_score  # NLP bonus added by compute_reward caller
+
+    # =========================================================================
+    # Layer 3 — Multi-Objective POMDP Formula (canonical, authoritative)
+    #
+    # ALL reward math lives here, in the environment layer — NOT in app.py.
+    # This enforces strict POMDP architectural purity (no split-brain).
+    #
+    # Severity ordinal rank map (shared across fire and patient dimensions):
+    #   none        → 0
+    #   low         → 1
+    #   moderate    → 2  (patient)  |  medium → 2  (fire)
+    #   high        → 3             |  critical → 4
+    #   catastrophic→ 5             |  fatal   → 5
+    # =========================================================================
+    _SEV_MAP: Dict[str, int] = {
+        "none": 0, "low": 1, "moderate": 2, "medium": 2,
+        "high": 3, "critical": 4, "catastrophic": 5, "fatal": 5,
+    }
+
+    # Step A — Aggregate severity delta (previous_severity - current_severity)
+    # A positive delta means the world improved (reward ↑).
+    # A negative delta means it degraded (reward ↓).
+    # Both fire and patient dimensions are summed for a holistic signal.
+    severity_delta: float = 0.0
+    for zone_id, cur_z in current_state.zones.items():
+        prev_z = previous_state.zones.get(zone_id, cur_z)
+        severity_delta += _SEV_MAP.get(prev_z.fire.value, 0) - _SEV_MAP.get(cur_z.fire.value, 0)
+        severity_delta += _SEV_MAP.get(prev_z.patient.value, 0) - _SEV_MAP.get(cur_z.patient.value, 0)
+
+    # Step B — Resource efficiency bonus
+    # resources_saved = units NOT deployed this step (proxy for conservation).
+    # efficiency_bonus = (resources_saved / total_resources) * 0.5
+    total_resources: float = float(
+        previous_state.idle_resources.fire_units
+        + previous_state.idle_resources.ambulances
+        + previous_state.idle_resources.police
+    )
+    resources_used: float = float(
+        sum(
+            d.dispatch_fire + d.dispatch_ambulance + (1 if d.control_traffic else 0)
+            for d in action.allocations.values()
+        )
+    )
+    resources_saved: float = max(0.0, total_resources - resources_used)
+    efficiency_bonus: float = (
+        (resources_saved / total_resources) * 0.5
+        if total_resources > 0 else 0.0
+    )
+
+    # Step C — Base time penalty (encourages episode efficiency)
+    time_penalty: float = 0.1
+
+    # Canonical Multi-Objective scalar:
+    #   R_multi = (severity_delta × 1.5) + efficiency_bonus − time_penalty
+    multi_obj_reward: float = (severity_delta * 1.5) + efficiency_bonus - time_penalty
+
+    # Unified total: Layer 1+2 (dispatch quality) + Layer 3 (POMDP objective)
+    total_reward = base_dispatch_score + multi_obj_reward
 
     logger.info(
-        "Step reward: %.4f (dispatch_quality=%.4f, trajectory_shaping=%.4f, active zones: %d)",
-        total_reward, dispatch_quality_total, trajectory_shaping_total,
+        "Step reward total=%.4f | dispatch_quality=%.4f trajectory_shaping=%.4f "
+        "severity_delta=%.2f efficiency_bonus=%.4f time_penalty=%.2f multi_obj=%.4f "
+        "active_zones=%d",
+        total_reward,
+        dispatch_quality_total, trajectory_shaping_total,
+        severity_delta, efficiency_bonus, time_penalty, multi_obj_reward,
         len(current_state.zones),
     )
 

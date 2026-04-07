@@ -6,8 +6,8 @@ description: >
   An Enterprise-Grade, Multi-Zone POMDP for routing emergency response
   across distributed geographical clusters tracking weather and traffic latency.
 
-author: "Meta Principal Systems Architect"
-license: "Apache-2.0"
+author: "Anbu-00001"
+license: "MIT"
 
 metadata:
   engine: "Meta Llama 3.3 via Groq"
@@ -102,24 +102,24 @@ reward:
     cascade_penalty: "Penalty for triggering cascading failure events"
 
 tasks:
-  task_1_easy:
-    id: 1
-    name: "Single-Zone Emergency"
-    difficulty: easy
+  - name: "Single-Zone Emergency (Easy)"
+    difficulty: "easy"
     description: "One active zone, clear weather, limited resources."
-  task_2_medium:
-    id: 2
-    name: "Multi-Zone Weather Chaos"
-    difficulty: medium
+    success_threshold: 0.50
+    max_steps: 12
+  - name: "Multi-Zone Weather Chaos (Medium)"
+    difficulty: "medium"
     description: "Multiple simultaneous zones under storm conditions."
-  task_3_hard:
-    id: 3
-    name: "City-Wide Meta Triage"
-    difficulty: hard
+    success_threshold: 0.50
+    max_steps: 15
+  - name: "City-Wide Meta Triage (Hard)"
+    difficulty: "hard"
     description: "All zones active under hurricane conditions with scarce resources."
+    success_threshold: 0.50
+    max_steps: 25
 
 grading:
-  formula: "(Success Rate * 0.50) + (Minimal Wastage Efficiency * 0.50)"
+  formula: "(0.50 * success_rate) + (0.30 * efficiency) + (0.20 * resource_usage)"
   success_threshold: 0.5
 
 runtime:
@@ -131,9 +131,9 @@ runtime:
   api_port: 7860
   resource_profile:
     vcpus: 2
-    ram: "4GB"
+    ram: "8GB"
   required_secrets:
-    - "GROQ_API_KEY"
+    - "HF_TOKEN"
 
 dependencies:
   - "pydantic>=2.0.0"
@@ -142,3 +142,4 @@ dependencies:
   - "openai>=1.0.0"
   - "fastapi>=0.100.0"
   - "uvicorn>=0.22.0"
+  - "openenv-core"
