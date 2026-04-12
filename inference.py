@@ -82,7 +82,11 @@ try:
     BASE_URL = os.getenv("API_BASE_URL", "http://localhost:7860")
     print("[INFO] Starting inference.py", flush=True)
     print(f"[INFO] BASE_URL = {BASE_URL}", flush=True)
-    for attempt in range(30):
+    MAX_WAIT_ATTEMPTS = 90
+    RETRY_SLEEP = 2
+    print(f"[INFO] Waiting up to {MAX_WAIT_ATTEMPTS * RETRY_SLEEP}s "
+          f"for server...", flush=True)
+    for attempt in range(MAX_WAIT_ATTEMPTS):
         try:
             r = requests.post(
                 f"{BASE_URL}/reset",
@@ -90,13 +94,17 @@ try:
                 timeout=5
             )
             if r.status_code == 200:
-                print(f"[INFO] Server ready after {attempt+1}s", flush=True)
+                print(f"[INFO] Server ready after "
+                      f"{(attempt+1) * RETRY_SLEEP}s", flush=True)
                 break
         except Exception as e:
-            print(f"[INFO] Attempt {attempt+1}/30 failed: {e}", flush=True)
-            time.sleep(1)
+            if attempt % 10 == 0:
+                print(f"[INFO] Still waiting... attempt "
+                      f"{attempt+1}/{MAX_WAIT_ATTEMPTS}", flush=True)
+            time.sleep(RETRY_SLEEP)
     else:
-        print("[ERROR] Server not ready after 30s", flush=True)
+        print("[ERROR] Server not ready after "
+              f"{MAX_WAIT_ATTEMPTS * RETRY_SLEEP}s", flush=True)
         sys.exit(1)
 except Exception as e:
     print(f"[FATAL] Pre-flight crash: {e}", flush=True)
