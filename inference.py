@@ -73,7 +73,21 @@ if not API_KEY:
 # Optional - image name resolution for from_docker_image()
 IMAGE_NAME = os.getenv("IMAGE_NAME") or os.getenv("LOCAL_IMAGE_NAME")
 
-ENV_URL = os.getenv("ENV_URL", "http://localhost:7860")
+BASE_URL = os.getenv("API_BASE_URL", "http://localhost:7860")
+
+import time, requests, sys
+print("[INFO] Waiting for server...", flush=True)
+for attempt in range(30):
+    try:
+        r = requests.post(f"{BASE_URL}/reset", json={"task_id": 1}, timeout=5)
+        if r.status_code == 200:
+            print(f"[INFO] Server ready after {attempt+1}s", flush=True)
+            break
+    except Exception:
+        time.sleep(1)
+else:
+    print("[ERROR] Server not ready after 30s", flush=True)
+    sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # Third-party imports
@@ -587,7 +601,7 @@ class LLMAgent:
                     time.sleep(min(2.0, 0.5 * (2 ** attempt)))
                 else:
                     logger.error("[FATAL API ERROR] %s", e)
-                    print("Log Warning to stderr: Switch to Static JSON Scenario", file=sys.stderr)
+                    print("Log Warning to stderr: Switch to Static JSON Scenario", file=sys.stderr, flush=True)
                     action = _build_fallback_action(obs)
                     return action, None, (time.monotonic() - t0) * 1000
 
@@ -845,10 +859,23 @@ def run_episode(agent: LLMAgent, task_id: int) -> None:
     logger.info("=== Starting Task %d ===", task_id)
     agent.reset_history()
 
-    response = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id}, timeout=10)
-    response.raise_for_status()
-    # Assume the response JSON matches the Observation schema natively
-    obs_data = response.json()
+    # BUG FIX: Wrap risky operations (network, parsing) in try/except with retries
+    # to handle container startup latency and transient network failures.
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(f"{BASE_URL}/reset", json={"task_id": task_id}, timeout=10)
+            response.raise_for_status()
+            # Assume the response JSON matches the Observation schema natively
+            obs_data = response.json()
+            break
+        except requests.exceptions.RequestException as e:
+            if attempt < max_retries - 1:
+                logger.warning("Failed to connect to /reset (attempt %d/%d): %s. Retrying in 2s...", attempt + 1, max_retries, e)
+                time.sleep(2)
+            else:
+                logger.error("FATAL: Could not connect to environment at %s after %d retries. Exception: %s", BASE_URL, max_retries, e)
+                raise
     # You may need to adjust how Observation is instantiated based on your model
     obs = Observation(**obs_data)
     metrics = MetricsTracker()
@@ -907,7 +934,7 @@ def run_episode(agent: LLMAgent, task_id: int) -> None:
                 # Pass action_payload directly as the JSON body (not wrapped in
                 # {"action": ...}) — app.py calls Action(**data) directly.
                 step_res = requests.post(
-                    f"{ENV_URL}/step",
+                    f"{BASE_URL}/step",
                     json=action_payload,
                     timeout=15,
                 )
@@ -1001,9 +1028,15 @@ def _parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    args   = _parse_args()
-    agent  = LLMAgent()
+    try:
+        args   = _parse_args()
+        agent  = LLMAgent()
 
-    tasks_to_run = [args.task] if args.task else [1, 2, 3]
-    for t_id in tasks_to_run:
-        run_episode(agent, t_id)
+        tasks_to_run = [args.task] if args.task else [1, 2, 3]
+        for t_id in tasks_to_run:
+            run_episode(agent, t_id)
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] {e}", flush=True)
+        traceback.print_exc()
+        sys.exit(1)
