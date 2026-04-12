@@ -116,15 +116,12 @@ from env.models import (
     ZoneState,
 )
 
+from env.logger import get_engine_logger
+
 # ---------------------------------------------------------------------------
 # Module-level logger
 # ---------------------------------------------------------------------------
-logger = logging.getLogger("crisis_env.reward")
-logger.setLevel(logging.INFO)
-if not logger.handlers:
-    _ch = logging.StreamHandler()
-    _ch.setFormatter(logging.Formatter("[%(levelname)s] REWARD - %(message)s"))
-    logger.addHandler(_ch)
+logger = get_engine_logger("crisis_env.reward")
 
 
 # ---------------------------------------------------------------------------
@@ -717,20 +714,16 @@ def calculate_step_reward(
     #   high        → 3             |  critical → 4
     #   catastrophic→ 5             |  fatal   → 5
     # =========================================================================
-    _SEV_MAP: Dict[str, int] = {
-        "none": 0, "low": 1, "moderate": 2, "medium": 2,
-        "high": 3, "critical": 4, "catastrophic": 5, "fatal": 5,
-    }
-
     # Step A — Aggregate severity delta (previous_severity - current_severity)
     # A positive delta means the world improved (reward ↑).
     # A negative delta means it degraded (reward ↓).
     # Both fire and patient dimensions are summed for a holistic signal.
+    # BUG-019: Coherent Severity Ordinal Rank substitution
     severity_delta: float = 0.0
     for zone_id, cur_z in current_state.zones.items():
         prev_z = previous_state.zones.get(zone_id, cur_z)
-        severity_delta += _SEV_MAP.get(prev_z.fire.value, 0) - _SEV_MAP.get(cur_z.fire.value, 0)
-        severity_delta += _SEV_MAP.get(prev_z.patient.value, 0) - _SEV_MAP.get(cur_z.patient.value, 0)
+        severity_delta += _FIRE_RANK[prev_z.fire] - _FIRE_RANK[cur_z.fire]
+        severity_delta += _PATIENT_RANK[prev_z.patient] - _PATIENT_RANK[cur_z.patient]
 
     # Step B — Resource efficiency bonus
     # resources_saved = units NOT deployed this step (proxy for conservation).
@@ -767,18 +760,10 @@ def calculate_step_reward(
     #          identity (verify_reward_ledger) holds at construction time.
     
     # Mathematical integration of the POMDP Temporal Discount Factor (γ = 0.99)
-    # The discount exponentially suppresses future rewards/penalties to force
-    # the RL agent to prioritize sustained cascading-failure prevention over
-    # procrastinated resolutions. This satisfies the evaluation physics requirements.
-    gamma = 0.99
-    # Discount applies for step t >= 1. step_count is 1-indexed.
-    discount = gamma ** max(0, step_count - 1)
-    
-    base_dispatch_score *= discount
-    efficiency_bonus    *= discount
-    time_penalty        *= discount
-    multi_obj_reward    *= discount
-
+    # BUG-011 FIX: Temporarily removed from here to prevent double-discounting.
+    # Discount applies for step t >= 1 exactly ONCE to the final total_reward scalar
+    # inside environment.py's step() aggregation.
+    # The pure ledger constants are left perfectly static.
     total_reward = (
         base_dispatch_score +
         0.0 -           # nlp_semantic_bonus  (orphan-safe; populated downstream)
@@ -996,8 +981,9 @@ def calculate_nlp_bonus(message: str, current_state: Observation) -> float:
     # =========================================================================
     nlp_score: float = 0.0
 
+    import re
     # ---- Component 1: Base Match (0.4) — must name the correct critical zone — #
-    if critical_zone_id.lower() in msg_lower:
+    if re.search(rf"\b{re.escape(critical_zone_id.lower())}\b", msg_lower):
         nlp_score += 0.4
         logger.debug("NLP Base Match: '%s' found → +0.4", critical_zone_id)
 
@@ -1059,125 +1045,3 @@ def calculate_nlp_bonus(message: str, current_state: Observation) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Backward-compatibility shim — environment.py calls compute_reward()
-
-def compute_reward(
-    action: Action,
-    obs: Observation,
-    previous_state: Optional[Observation] = None,
-    previous_failures: Optional[Dict[str, int]] = None,
-    step_count: int = 1,
-) -> tuple[float, bool]:
-    """Backward-compatible wrapper used by ``environment.py``.
-
-    Applies three independent reward layers and returns the Gym-compliant
-    ``(total_reward_float, all_resolved)`` tuple.  Internally this now
-    instantiates a ``Reward`` Pydantic ledger object so that every step's
-    arithmetic breakdown is captured and logged as structured JSON —
-    providing direct evidence to judges that the ``Reward`` model is an
-    active participant in the simulation loop, not a passive schema.
-
-    Layers applied:
-
-    1. **Dispatch Quality + Trajectory Shaping** (``calculate_step_reward``)
-       Numeric dispatch decisions evaluated against incident requirements,
-       plus Δ-severity shaping across consecutive steps.
-    2. **Context-Grounded Semantic Grader** (``calculate_nlp_bonus``)
-       Evaluates the quality of the agent's natural-language broadcast
-       message against the actual crisis state.  Scores 0-1.0 only when
-       a HIGH/CATASTROPHIC fire or CRITICAL patient is active.
-
-    Args:
-        action:         Agent's dispatch action.
-        obs:            Current observation (pre-resolution).
-        previous_state: Optional previous-step observation for shaping.
-
-    Returns:
-        ``(total_reward, all_resolved)`` where ``all_resolved`` is ``True``
-        if no zone had an unmet requirement at this step.
-    """
-    prior = previous_state if previous_state is not None else obs
-
-    # calculate_step_reward now returns a Reward ledger object (Layers 1 + 2)
-    reward_ledger: Reward = calculate_step_reward(
-        current_state=obs,
-        action=action,
-        previous_state=prior,
-        previous_failures=previous_failures,
-        step_count=step_count,
-    )
-
-    # ---- Layer 3: Context-Grounded Semantic Grader (NLP broadcast bonus) -- #
-    # Gate: only award when there is an active HIGH/CATASTROPHIC fire OR a
-    # CRITICAL patient.  Outside of crisis conditions the broadcast is
-    # irrelevant — granting a bonus here would reward unnecessary scaremongering.
-    nlp_bonus_value: float = 0.0
-    has_high_severity = any(
-        z.fire in (FireLevel.HIGH, FireLevel.CATASTROPHIC)
-        or z.patient == PatientLevel.CRITICAL
-        for z in obs.zones.values()
-    )
-    if has_high_severity and action.public_broadcast_message:
-        nlp_bonus_value = calculate_nlp_bonus(action.public_broadcast_message, obs)
-        logger.debug("Layer 3 NLP bonus applied: +%.2f", nlp_bonus_value)
-
-    # Apply the same strict temporal discount to Layer 3 before aggregation
-    gamma = 0.99
-    discount = gamma ** max(0, step_count - 1)
-    nlp_bonus_value *= discount
-    nlp_bonus_value = round(nlp_bonus_value, 4)
-
-    # Build the final Reward ledger with all three populated layers.
-    # waste_penalty is left at 0.0 here; environment.py owns that accumulator
-    # and logs the full ledger JSON with the live waste figure after resolution.
-    base = reward_ledger.base_dispatch_score
-    eff   = reward_ledger.efficiency_bonus
-    t_pen = reward_ledger.time_penalty
-    m_obj = reward_ledger.multi_obj
-    # Full 6-component total: base + nlp - waste(0) + efficiency - time + multi_obj
-    total = round(base + nlp_bonus_value + eff - t_pen + m_obj, 4)
-    final_ledger = Reward(
-        base_dispatch_score=base,
-        nlp_semantic_bonus=nlp_bonus_value,
-        waste_penalty=0.0,
-        efficiency_bonus=eff,
-        time_penalty=t_pen,
-        multi_obj=m_obj,
-        total_reward=total,
-        dispatch_quality=reward_ledger.dispatch_quality,
-        trajectory_shaping=reward_ledger.trajectory_shaping,
-        nlp_bonus=nlp_bonus_value,
-        is_terminal=False,  # is_terminal set by environment.py after step
-    )
-    logger.info(
-        "Reward Ledger JSON: %s",
-        final_ledger.model_dump_json(),
-    )
-
-    # Derive all_resolved: True only if every zone had no active incidents
-    # OR the dispatch was sufficient for all zones.
-    all_resolved = True
-    for zone_id, zone_state in obs.zones.items():
-        r_fire = _get_required_fire(zone_state.fire, obs.weather)
-        r_amb = _get_required_ambulance(zone_state.patient)
-        needs_traffic = zone_state.traffic in (TrafficLevel.HEAVY, TrafficLevel.GRIDLOCK)
-
-        if r_fire == 0 and r_amb == 0 and not needs_traffic:
-            continue  # Zone is clear - no response needed.
-
-        dispatch = action.allocations.get(zone_id, ZoneDispatch())
-        amb_gridlock = (
-            RewardConstants.GRIDLOCK_AMB_FRICTION
-            if zone_state.traffic == TrafficLevel.GRIDLOCK and not dispatch.control_traffic
-            else 0
-        )
-
-        fire_ok    = (r_fire == 0) or (dispatch.dispatch_fire >= r_fire)
-        amb_ok     = (r_amb == 0)  or (dispatch.dispatch_ambulance >= (r_amb + amb_gridlock))
-        traffic_ok = (not needs_traffic) or dispatch.control_traffic
-
-        if not (fire_ok and amb_ok and traffic_ok):
-            all_resolved = False
-            break
-
-    return final_ledger.total_reward, all_resolved

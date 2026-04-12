@@ -61,14 +61,13 @@ class LogValidator:
                     print(f"FAILED: [STEP] missing reward. Line: {line}", file=sys.stderr)
                     return False
                     
-                # Check for action
-                # Support capturing up to the next kwarg if present. We know action is usually a JSON struct {"allocations":...}
-                action_match = re.search(r"action=(\{.*?\})\s+reward=", line)
-                if not action_match:
+                # Support capturing up to the next kwarg if present natively eliminating RegEx brittle dependencies
+                if "action=" not in line or "reward=" not in line:
                     print(f"FAILED: [STEP] missing or malformed action JSON. Line: {line}", file=sys.stderr)
                     return False
                 
-                action_str = action_match.group(1)
+                # Split everything between action= and reward= globally parsing any nested JSON depth gracefully
+                action_str = line.split("action=")[1].rsplit(" reward=", 1)[0].strip()
                 try:
                     parsed = json.loads(action_str)
                     if not isinstance(parsed, dict):

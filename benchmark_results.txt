@@ -1,0 +1,92 @@
+✅ Server is healthy at http://localhost:7860
+
+================================================================================
+ BENCHMARK: 2 agents × 3 tasks × 10 seeds = 60 episodes
+================================================================================
+
+  [  1/60] Random       | Task 1 | seed=   42 | score=0.7449 | eff=0.6829 | steps= 2
+  [  2/60] Random       | Task 1 | seed=   43 | score=0.7428 | eff=0.5428 | steps= 2
+  [  3/60] Random       | Task 1 | seed=   44 | score=0.6942 | eff=0.5139 | steps= 2
+  [  4/60] Random       | Task 1 | seed=   45 | score=0.2500 | eff=0.0000 | steps=12
+  [  5/60] Random       | Task 1 | seed=   46 | score=0.6179 | eff=0.3930 | steps= 2
+  [  6/60] Random       | Task 1 | seed=   47 | score=0.6030 | eff=0.3435 | steps= 3
+  [  7/60] Random       | Task 1 | seed=   48 | score=0.0000 | eff=0.0000 | steps=12
+  [  8/60] Random       | Task 1 | seed=   49 | score=0.2500 | eff=0.0000 | steps=12
+  [  9/60] Random       | Task 1 | seed=   50 | score=0.0000 | eff=0.0000 | steps=12
+  [ 10/60] Random       | Task 1 | seed=   51 | score=0.6366 | eff=0.4554 | steps= 3
+  [ 11/60] Random       | Task 2 | seed=   42 | score=0.0000 | eff=0.0000 | steps=15
+  [ 12/60] Random       | Task 2 | seed=   43 | score=0.2067 | eff=0.0000 | steps=15
+  [ 13/60] Random       | Task 2 | seed=   44 | score=0.2600 | eff=0.0000 | steps=15
+  [ 14/60] Random       | Task 2 | seed=   45 | score=0.1933 | eff=0.0000 | steps=15
+  [ 15/60] Random       | Task 2 | seed=   46 | score=0.1667 | eff=0.0000 | steps=15
+  [ 16/60] Random       | Task 2 | seed=   47 | score=0.0000 | eff=0.0000 | steps=15
+  [ 17/60] Random       | Task 2 | seed=   48 | score=0.1667 | eff=0.0000 | steps=15
+  [ 18/60] Random       | Task 2 | seed=   49 | score=0.0000 | eff=0.0000 | steps=15
+  [ 19/60] Random       | Task 2 | seed=   50 | score=0.3600 | eff=0.0000 | steps=15
+  [ 20/60] Random       | Task 2 | seed=   51 | score=0.2067 | eff=0.0000 | steps=15
+  [ 21/60] Random       | Task 3 | seed=   42 | score=0.2280 | eff=0.0000 | steps=25
+  [ 22/60] Random       | Task 3 | seed=   43 | score=0.2233 | eff=0.0000 | steps=25
+  [ 23/60] Random       | Task 3 | seed=   44 | score=0.1400 | eff=0.0000 | steps=25
+  [ 24/60] Random       | Task 3 | seed=   45 | score=0.1582 | eff=0.0000 | steps=25
+  [ 25/60] Random       | Task 3 | seed=   46 | score=0.0933 | eff=0.0000 | steps=25
+  [ 26/60] Random       | Task 3 | seed=   47 | score=0.2360 | eff=0.0000 | steps=25
+  [ 27/60] Random       | Task 3 | seed=   48 | score=0.1540 | eff=0.0000 | steps=25
+  [ 28/60] Random       | Task 3 | seed=   49 | score=0.1111 | eff=0.0000 | steps=25
+  [ 29/60] Random       | Task 3 | seed=   50 | score=0.0960 | eff=0.0000 | steps=25
+  [ 30/60] Random       | Task 3 | seed=   51 | score=0.1525 | eff=0.0000 | steps=25
+  [ 31/60] Heuristic    | Task 1 | seed=   42 | score=0.9232 | eff=0.7439 | steps= 1
+  [ 32/60] Heuristic    | Task 1 | seed=   43 | score=0.9168 | eff=0.7226 | steps= 1
+  [ 33/60] Heuristic    | Task 1 | seed=   44 | score=0.9232 | eff=0.7439 | steps= 1
+  [ 34/60] Heuristic    | Task 1 | seed=   45 | score=0.9168 | eff=0.7226 | steps= 1
+  [ 35/60] Heuristic    | Task 1 | seed=   46 | score=0.9232 | eff=0.7439 | steps= 1
+  [ 36/60] Heuristic    | Task 1 | seed=   47 | score=0.9232 | eff=0.7439 | steps= 1
+  [ 37/60] Heuristic    | Task 1 | seed=   48 | score=0.9232 | eff=0.7439 | steps= 1
+  [ 38/60] Heuristic    | Task 1 | seed=   49 | score=0.9168 | eff=0.7226 | steps= 1
+  [ 39/60] Heuristic    | Task 1 | seed=   50 | score=0.9232 | eff=0.7439 | steps= 1
+  [ 40/60] Heuristic    | Task 1 | seed=   51 | score=0.9168 | eff=0.7226 | steps= 1
+  [ 41/60] Heuristic    | Task 2 | seed=   42 | score=0.9012 | eff=0.6706 | steps= 1
+  [ 42/60] Heuristic    | Task 2 | seed=   43 | score=0.9300 | eff=0.7667 | steps= 1
+  [ 43/60] Heuristic    | Task 2 | seed=   44 | score=0.8959 | eff=0.6529 | steps= 1
+  [ 44/60] Heuristic    | Task 2 | seed=   45 | score=0.8959 | eff=0.6529 | steps= 1
+  [ 45/60] Heuristic    | Task 2 | seed=   46 | score=0.9012 | eff=0.6706 | steps= 1
+  [ 46/60] Heuristic    | Task 2 | seed=   47 | score=0.8959 | eff=0.6529 | steps= 1
+  [ 47/60] Heuristic    | Task 2 | seed=   48 | score=0.9012 | eff=0.6706 | steps= 1
+  [ 48/60] Heuristic    | Task 2 | seed=   49 | score=0.8959 | eff=0.6529 | steps= 1
+  [ 49/60] Heuristic    | Task 2 | seed=   50 | score=0.8959 | eff=0.6529 | steps= 1
+  [ 50/60] Heuristic    | Task 2 | seed=   51 | score=0.8959 | eff=0.6529 | steps= 1
+  [ 51/60] Heuristic    | Task 3 | seed=   42 | score=0.1600 | eff=0.0000 | steps=25
+  [ 52/60] Heuristic    | Task 3 | seed=   43 | score=0.2333 | eff=0.0000 | steps=25
+  [ 53/60] Heuristic    | Task 3 | seed=   44 | score=0.1933 | eff=0.0000 | steps=25
+  [ 54/60] Heuristic    | Task 3 | seed=   45 | score=0.2333 | eff=0.0000 | steps=25
+  [ 55/60] Heuristic    | Task 3 | seed=   46 | score=0.1067 | eff=0.0000 | steps=25
+  [ 56/60] Heuristic    | Task 3 | seed=   47 | score=0.1600 | eff=0.0000 | steps=25
+  [ 57/60] Heuristic    | Task 3 | seed=   48 | score=0.1333 | eff=0.0000 | steps=25
+  [ 58/60] Heuristic    | Task 3 | seed=   49 | score=0.2444 | eff=0.0000 | steps=25
+  [ 59/60] Heuristic    | Task 3 | seed=   50 | score=0.1333 | eff=0.0000 | steps=25
+  [ 60/60] Heuristic    | Task 3 | seed=   51 | score=0.1659 | eff=0.0000 | steps=25
+
+================================================================================
+ RESULTS SUMMARY
+================================================================================
+
+       Agent |                                Task |     Score (μ±σ) |   Efficiency (μ±σ) |   N
+-------------+-------------------------------------+-----------------+--------------------+----
+      Random |        Single-Zone Emergency (Easy) | 0.454 ± 0.299 | 0.293 ± 0.268    |  10
+      Random |      Multi-Zone Weather Chaos (Med) | 0.156 ± 0.121 | 0.000 ± 0.000    |  10
+      Random |        City-Wide Meta Triage (Hard) | 0.159 ± 0.054 | 0.000 ± 0.000    |  10
+   Heuristic |        Single-Zone Emergency (Easy) | 0.921 ± 0.003 | 0.735 ± 0.011    |  10
+   Heuristic |      Multi-Zone Weather Chaos (Med) | 0.901 ± 0.011 | 0.670 ± 0.035    |  10
+   Heuristic |        City-Wide Meta Triage (Hard) | 0.176 ± 0.048 | 0.000 ± 0.000    |  10
+
+================================================================================
+ README BASELINE TABLE (copy-paste)
+================================================================================
+
+| Task | Evaluation Tier | Agent / Policy | Grader Score | Efficiency Score |
+| :--- | :--- | :--- | :---: | :---: |
+| **Task 1 (Easy)** | Random Baseline | Random Agent | 0.454 ± 0.299 | 0.293 |
+| **Task 1 (Easy)** | Heuristic Baseline | Heuristic Agent | 0.921 ± 0.003 | 0.735 |
+| **Task 2 (Med)** | Random Baseline | Random Agent | 0.156 ± 0.121 | 0.000 |
+| **Task 2 (Med)** | Heuristic Baseline | Heuristic Agent | 0.901 ± 0.011 | 0.670 |
+| **Task 3 (Hard)** | Random Baseline | Random Agent | 0.159 ± 0.054 | 0.000 |
+| **Task 3 (Hard)** | Heuristic Baseline | Heuristic Agent | 0.176 ± 0.048 | 0.000 |

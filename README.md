@@ -20,7 +20,7 @@ tags:
 
 **Architectural Highlights:**
 * **Strict M2M Telemetry:** Fully compliant with Meta's regex-based evaluation pipeline (guaranteed `.2f` precision & $Z_{norm}$ bounding).
-* **PRNG Isolation:** Eliminates global state leaks via isolated `numpy.random.default_rng()` for parallelized agent rollouts.
+* **PRNG Isolation:** Eliminates global state leaks via isolated `random.Random` monolith lock instantiated exclusively upon initialization.
 * **Structural Fault Tolerance:** Graceful 422 to 200 recovery for LLM hallucination handling.
 
 **[🟢 Live Hugging Face Space](https://huggingface.co/spaces/Anbu-00001/adaptive-crisis-env)**
@@ -111,8 +111,16 @@ We use **Meta Llama 3.3 70B Instruct** via the HF Router (`router.huggingface.co
 ### Secure Execution Context
 True statelessness demands physical secret extraction. We've built the framework assuming a zero-trust external footprint:
 * The required `HF_TOKEN` is safely sourced from Hugging Face Secrets — never hardcoded in source.
-* Credentials must be injected via the secure HF Spaces secrets management tier upon container boot-up.
+* credentials must be injected via the secure HF Spaces secrets management tier upon container boot-up.
 * The container (`sdk: docker`) refuses to commit state. If it dies, all local logs, inference buffers, and PRNG seeds are permanently zeroed out.
+
+### 🔐 Environment Variables
+The application implements strict hierarchical payload loading defining security configurations:
+| Variable | Status | Role | Cascade Order |
+|:---|:---:|:---|:---|
+| `HF_TOKEN` | **Required** | Accesses default Hugging Face inference environments natively securing model pulls. | Checked first. Acts as `api_key` if `API_KEY` is completely unset. |
+| `API_KEY` | Optional | Native primary endpoint injection token. | Overrides everything gracefully mapping strictly prior to `GROQ_API_KEY`. |
+| `GROQ_API_KEY`| Optional | Standby fallback key exclusively for Groq ultra-latency routing. | Lowest priority fallback. |
 
 ## 4. Task Descriptions
 
@@ -134,7 +142,7 @@ Simultaneous Suburbs fire (MEDIUM/HIGH) and Downtown medical casualties (MODERAT
 Five zones (Downtown, Suburbs, Industrial, **Harbor**, **Residential**) simultaneously active under HURRICANE weather with scarce resources (6 fire, 3 ambulances, 2 police). Features three non-stationary mechanics:
 - **Inter-Zone Cascading**: HIGH+ severity fires spread to neighbors with probability $P = \beta \cdot (\xi_j - \tau) / (\xi_{max} - \tau)$, where $\beta = 0.4$.
 - **Resource Depletion**: Fire units decay every 4 steps: $N_{fire,t} = N_{fire,0} - \lfloor t/4 \rfloor$.
-- **Mid-Episode Crisis Spawning**: New incidents spawn at steps 5 (fire) and 10 (medical) into clear zones.
+- **Mid-Episode Crisis Spawning**: New incidents spawn at steps 5 (fire) and 10 (medical) into clear zones. *Note: this means the `success_rate` denominator (`total_incidents`) is strictly non-stationary and adjusts dynamically during the episode timeline.*
 
 ## 4.1 Adaptive Curriculum Design
 
@@ -189,11 +197,14 @@ Below are the empirical baseline evaluations recorded by the `Grader` across all
 
 | Task | Evaluation Tier | Agent / Policy | Grader Score | Efficiency Score |
 | :--- | :--- | :--- | :---: | :---: |
-| **Task 1 (Easy)** | Random Baseline | Uniform Random Dispatch | 0.000 | 0.000 |
+| **Task 1 (Easy)** | Random Baseline | Uniform Random Dispatch | 0.454 ± 0.299 | 0.293 |
+| **Task 1 (Easy)** | Heuristic Baseline | Priority Queue Rules | 0.921 ± 0.003 | 0.735 |
 | **Task 1 (Easy)** | Reference LLM | Meta Llama 3.3 70B | 0.885 | 0.912 |
-| **Task 2 (Med)** | Random Baseline | Uniform Random Dispatch | 0.000 | 0.000 |
+| **Task 2 (Med)** | Random Baseline | Uniform Random Dispatch | 0.156 ± 0.121 | 0.000 |
+| **Task 2 (Med)** | Heuristic Baseline | Priority Queue Rules | 0.901 ± 0.011 | 0.670 |
 | **Task 2 (Med)** | Reference LLM | Meta Llama 3.3 70B | 0.762 | 0.745 |
-| **Task 3 (Hard)** | Random Baseline | Uniform Random Dispatch | 0.000 | 0.000 |
+| **Task 3 (Hard)** | Random Baseline | Uniform Random Dispatch | 0.159 ± 0.054 | 0.000 |
+| **Task 3 (Hard)** | Heuristic Baseline | Priority Queue Rules | 0.176 ± 0.048 | 0.000 |
 | **Task 3 (Hard)** | Reference LLM | Meta Llama 3.3 70B | 0.410 | 0.380 |
 
 ## 6. Execution Sandbox Instructions

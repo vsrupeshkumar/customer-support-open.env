@@ -7,7 +7,7 @@ FROM python:3.10-slim
 
 # ---- System-level hardening & metadata -------------------------
 LABEL maintainer="Meta Capstone Team" \
-      version="4.0.0" \
+      version="4.1.0" \
       description="OpenEnv-compliant Crisis Management RL Environment API"
 
 # Prevent Python from writing .pyc files and buffering stdout/stderr
@@ -35,5 +35,8 @@ USER 1000
 EXPOSE 7860
 
 # ---- Runtime ---------------------------------------------------
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:7860/health || exit 1
+
 # Hugging Face Spaces expects the service to bind on 0.0.0.0:7860
 CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "7860"]

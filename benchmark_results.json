@@ -1,0 +1,14 @@
+{
+  "metadata": {
+    "seeds": 10,
+    "timestamp": "2026-04-12T06:05:40Z"
+  },
+  "results": [
+    {"agent": "Random", "task": 1, "score_mean": 0.454, "score_std": 0.299},
+    {"agent": "Random", "task": 2, "score_mean": 0.156, "score_std": 0.121},
+    {"agent": "Random", "task": 3, "score_mean": 0.159, "score_std": 0.054},
+    {"agent": "Heuristic", "task": 1, "score_mean": 0.921, "score_std": 0.003},
+    {"agent": "Heuristic", "task": 2, "score_mean": 0.901, "score_std": 0.011},
+    {"agent": "Heuristic", "task": 3, "score_mean": 0.176, "score_std": 0.048}
+  ]
+}

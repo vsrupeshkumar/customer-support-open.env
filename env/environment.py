@@ -22,6 +22,7 @@ The public API follows the OpenEnv specification:
 from __future__ import annotations
 
 import logging
+import math
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -43,20 +44,17 @@ from env.models import (
     TrajectoryStep,
     StructuralHallucinationError,
 )
-from env.reward import compute_reward, calculate_step_reward
+from env.reward import calculate_step_reward, calculate_nlp_bonus
 from env.tasks import Task, HardTask, create_task
 from openenv.core import Environment
+
+from env.logger import get_engine_logger
 
 # ---------------------------------------------------------------------------
 # Module-level logger (engine diagnostics only — no UI formatting)
 # ---------------------------------------------------------------------------
 
-logger = logging.getLogger("crisis_env.engine")
-logger.setLevel(logging.INFO)
-if not logger.handlers:
-    _ch = logging.StreamHandler()
-    _ch.setFormatter(logging.Formatter("[%(levelname)s] ENGINE - %(message)s"))
-    logger.addHandler(_ch)
+logger = get_engine_logger("crisis_env.engine")
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +74,7 @@ class InventoryBreachException(Exception):
     """Raised internally when the LLM requests more units than available.
 
     This exception is caught within ``step()`` and converted to a catastrophic
-    terminal penalty rather than propagating to the caller.  It serves as the
+    continuous penalty rather than propagating to the caller.  It serves as the
     internal signal that an Inventory Breach has occurred.
     """
 
@@ -219,7 +217,8 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         self._escalation_count: int = 0             # number of escalations applied
         self._curriculum_enabled: bool = (task_id >= 2)  # active for Medium + Hard
 
-        self.reset(seed=seed)
+        # BUG-015: Enforce Gymnasium return contract capturing initialization Tuple values natively.
+        self.obs, _ = self.reset(seed=seed)
         logger.info("CrisisManagementEnv successfully booted locally against Task %d.", task_id)
 
     # ------------------------------------------------------------------
@@ -429,7 +428,7 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         #   category.  If ANY category exceeds the available idle pool, the
         #   action is physically impossible and constitutes a hallucination
         #   failure.  We do NOT silently clamp — we apply a catastrophic
-        #   terminal penalty, void the entire action, and terminate the episode.
+        #   continuous penalty, void the entire action, and continue the episode.
         #
         #   Penalty formula:
         #     R_terminal = -15.0 × severity_multiplier
@@ -567,7 +566,20 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         # NOTE: we do NOT yet add this to self._total_reward here;
         # the final corrected reward (after waste subtraction) is committed below.
         base_dispatch_reward: float = step_reward_ledger.base_dispatch_score
-        step_nlp_bonus: float = step_reward_ledger.nlp_bonus
+        
+        # Directive 3: Context-Grounded Semantic Grader (NLP broadcast bonus)
+        step_nlp_bonus: float = 0.0
+        msg_raw = getattr(action, "public_broadcast_message", None)
+        if isinstance(msg_raw, str) and getattr(action, "public_broadcast_message", ""):
+            # Gate: only award when there is an active HIGH/CATASTROPHIC fire OR a CRITICAL patient.
+            has_high_severity = any(
+                z.fire in (FireLevel.HIGH, FireLevel.CATASTROPHIC)
+                or z.patient == PatientLevel.CRITICAL
+                for z in self.obs.zones.values()
+            )
+            if has_high_severity:
+                step_nlp_bonus = calculate_nlp_bonus(msg_raw, self.obs)
+                logger.debug("Layer 3 NLP bonus applied: +%.2f", step_nlp_bonus)
 
         # Snapshot waste accumulator BEFORE zone resolution so we can compute
         # the per-step waste delta after the zone loop completes.
@@ -579,6 +591,8 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
             dispatch = action.allocations.get(zone_id, ZoneDispatch())
             # Snapshot zone severity BEFORE resolution so the penalty reflects
             # the hazard level that the agent actually faced this step.
+            # BUG-014 ARCHITECTURAL WARNING: pre_fire_level explicitly maps pre-state.
+            # _resolve_zone mutates `zone_state.fire` Pydantics IN-PLACE. Strict ordering required!
             pre_fire_level  = zone_state.fire
             pre_patient_level = zone_state.patient
 
@@ -592,11 +606,28 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
             
             if has_active_hazard and is_zero_dispatch:
                 logger.warning(
-                    "[Step %d] LAZY AGENT EXPLOIT CAUGHT in %s: Zero resources dispatched to active hazard. Escalating crisis and penalizing.",
+                    "[Step %d] LAZY AGENT EXPLOIT CAUGHT in %s: Zero resources dispatched "
+                    "to active hazard. Escalating crisis severity (resolution skipped). "
+                    "Reward penalty applied via reward.py: IGNORE_INCIDENT(-4.0) + "
+                    "DELAYED_HIGH_SEVERITY(-5.0 if applicable).",
                     self._step_count, zone_id
                 )
+                # BUG-007 FIX: Do NOT subtract an additional -5.0 here.
+                # The reward function (calculate_step_reward → _zone_reward) already
+                # applies:
+                #   IGNORE_INCIDENT     = -4.0  (always, for empty dispatch on active zone)
+                #   DELAYED_HIGH_SEVERITY = -5.0  (if HIGH/CATASTROPHIC fire or CRITICAL patient)
+                # That gives a correct -4.0 to -9.0 per-zone penalty via the reward pipeline.
+                #
+                # Previously, this guard ALSO subtracted -5.0 from base_dispatch_reward,
+                # creating a total of -14.0/zone this step + -3.0/zone next step (from
+                # _escalate_zone triggering trajectory degradation) = -17.0 compound penalty.
+                # That was mathematically disproportionate and made agent recovery impossible.
+                #
+                # The _escalate_zone() call IS kept: neglected zones SHOULD worsen, and
+                # the `continue` correctly skips _resolve_zone (can't resolve what you
+                # didn't dispatch to).
                 self._escalate_zone(zone_state)
-                base_dispatch_reward -= 5.0
                 continue
 
             used_fire, used_amb, used_pol = self._commit_allocation(
@@ -713,6 +744,7 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         # summaries of what changed and whether the dispatch was sufficient.
         # No numeric thresholds are disclosed — the agent must calibrate from
         # the direction of change (improved / held / degraded).
+        from env.reward import _FIRE_RANK, _PATIENT_RANK
         feedback_lines: list[str] = [
             f"[Step {self._step_count - 1} Dispatch Results]"
         ]
@@ -732,7 +764,7 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
                     parts.append(
                         f"fire RESOLVED (sent {disp.dispatch_fire} fire units — SUFFICIENT)."
                     )
-                elif cur_z.fire.value > prev_z.fire.value:
+                elif _FIRE_RANK[cur_z.fire] > _FIRE_RANK[prev_z.fire]:
                     parts.append(
                         f"fire ESCALATED {prev_z.fire.value}→{cur_z.fire.value} "
                         f"(sent {disp.dispatch_fire} fire units — INSUFFICIENT, increase allocation)."
@@ -753,7 +785,7 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
                     parts.append(
                         f"patient status FATAL — too late to act."
                     )
-                elif cur_z.patient.value > prev_z.patient.value:
+                elif _PATIENT_RANK[cur_z.patient] > _PATIENT_RANK[prev_z.patient]:
                     parts.append(
                         f"patient condition WORSENED {prev_z.patient.value}→{cur_z.patient.value} "
                         f"(sent {disp.dispatch_ambulance} ambulances — INSUFFICIENT)."
@@ -798,12 +830,6 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         # -----------------------------------------------------------------------
         step_waste_penalty: float = self._wasted_dispatches - _waste_before_step
         
-        # Apply the same strict temporal discount to the environment's isolated waste penalty 
-        # so the Pydantic ledger verification identity perfectly balances across all 6 arrays
-        gamma = 0.99
-        discount = gamma ** max(0, self._step_count - 1)
-        step_waste_penalty *= discount
-
         # Absorb loop penalty into the waste category for ledger integrity.
         # The reward identity requires: base + nlp - waste + eff - time + multi = total
         # Since loop_penalty was already subtracted from `reward`, we record it in waste.
@@ -816,10 +842,9 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         step_time_penalty: float     = step_reward_ledger.time_penalty
         step_multi_obj: float        = step_reward_ledger.multi_obj
 
-        # 1. Synthesize the complete Multi-Objective Reward Tensor
-        #    R_total = R_base + R_semantic - R_waste + R_efficiency - R_time + R_multiobj
+        # 1. Synthesize the complete Multi-Objective Reward Tensor calculating scalar physics
         #    NOTE: loop_penalty is already absorbed into step_waste_penalty above.
-        reward: float = (
+        pre_discount_reward: float = (
             base_dispatch_reward +
             step_nlp_bonus -
             step_waste_penalty +
@@ -828,7 +853,31 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
             step_multi_obj  # CRITICAL PATCH: Inject orphaned multi-objective bonus
         )
 
-        # Commit the corrected step reward to the cumulative episode total
+        # ---------------------------------------------------------------
+        # BUG-033 FIX: POMDP Temporal Discount Factor (γ = 0.99)
+        #
+        # ARCHITECTURE DECISION — Separation of Concerns:
+        #   1. The Reward Pydantic ledger stores the UNDISCOUNTED
+        #      pre_discount_reward so the 6-component identity
+        #      (base + nlp - waste + eff - time + multi = total)
+        #      always holds. The ledger is a MATHEMATICAL PROOF
+        #      ARTIFACT, not the MDP signal.
+        #
+        #   2. The DISCOUNTED reward (reward × γ^(t-1)) is:
+        #      a) Returned to the agent as the step reward scalar
+        #      b) Accumulated into self._total_reward for scoring
+        #      c) Fed into the curriculum escalation rolling window
+        #
+        # This separation prevents the Pydantic model_validator from
+        # throwing ValueError when |pre_discount_reward| × |1 - γ^(t-1)|
+        # exceeds abs_tol=1e-4 (which happens at step >5 with any
+        # non-trivial reward magnitude).
+        # ---------------------------------------------------------------
+        gamma = 0.99
+        discount_factor = gamma ** max(0, self._step_count - 1)
+        reward = pre_discount_reward * discount_factor
+
+        # Commit the discounted step reward to the cumulative episode total
         # (use pre-rounded value so the accumulator remains precise).
         self._total_reward += reward
 
@@ -878,6 +927,13 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         # 3. Construct the strict Pydantic ledger — all 6 components populated.
         #    The verify_reward_ledger model_validator enforces:
         #      base + nlp - waste + efficiency - time + multi_obj == total_reward
+        #
+        #    BUG-033 FIX: total_reward in the ledger is the UNDISCOUNTED
+        #    pre_discount_reward (rounded to 4dp). This ensures the ledger
+        #    identity always holds regardless of step count or discount factor.
+        #    The discounted MDP signal is returned separately via the step()
+        #    return tuple and exposed in info["reward_breakdown"]["total"].
+        ledger_total = round(pre_discount_reward, 4)
         final_step_ledger = Reward(
             base_dispatch_score=base_dispatch_reward,
             nlp_semantic_bonus=step_nlp_bonus,
@@ -885,16 +941,20 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
             efficiency_bonus=step_efficiency_bonus,
             time_penalty=step_time_penalty,
             multi_obj=step_multi_obj,
-            total_reward=reward,
+            total_reward=ledger_total,
             dispatch_quality=step_reward_ledger.dispatch_quality,
             trajectory_shaping=step_reward_ledger.trajectory_shaping,
             nlp_bonus=step_nlp_bonus,
             is_terminal=self._is_done,
         )
         logger.info(
-            "[Step %d] Reward Ledger: %s",
+            "[Step %d] Reward Ledger (undiscounted): %s | "
+            "MDP signal (discounted, γ^%d=%.4f): %.4f",
             self._step_count,
             final_step_ledger.model_dump_json(),
+            max(0, self._step_count - 1),
+            discount_factor,
+            reward,
         )
 
         # Directive 3: efficiency_score = Base_Reward / (Base_Reward + Waste_Penalty)
@@ -918,9 +978,15 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
             "step_waste_penalty": step_waste_penalty,   # per-step waste for evaluator transparency
             "reward_ledger": final_step_ledger.model_dump(),
             "action_diversity": action_diversity,
+            # BUG-033: discount_factor exposed for full temporal transparency.
+            # Evaluators can verify: reward_breakdown.total == ledger.total_reward × γ^(t-1)
+            "discount_factor": round(discount_factor, 6),
             # ---- Component 3: Top-level reward_breakdown for transparency ----
+            # NOTE: "total" here is the DISCOUNTED MDP signal (what the agent sees).
+            #       "undiscounted_total" is the raw arithmetic sum (what the ledger proves).
             "reward_breakdown": {
                 "total": reward,
+                "undiscounted_total": ledger_total,
                 "base_dispatch": base_dispatch_reward,
                 "nlp_semantic": step_nlp_bonus,
                 "waste_penalty": -step_waste_penalty,
@@ -1070,7 +1136,6 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         self.obs.busy_resources.police     += used_pol
 
         # Implement the Dynamic Cooldown Calculus
-        import math
         base_cooldown = 2
 
         # Extract the incident's severity (e.g., 1 to 5)
@@ -1316,17 +1381,25 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
             )
 
     def _hard_mode_disaster_spawn(self) -> None:
-        """Mid-Episode Disaster Spawning — new crises at steps 5 and 10.
+        """Stochastic Disaster Spawning (NHPP) — Mathematical arrival modeling.
 
-        Mathematical formula:
-            If t ∈ {5, 10} and ∃ zone z : ξ_z = 0 (clear fire/patient):
-                ξ_z ← MEDIUM (fire) or MODERATE (patient)
+        Mathematical formula (Non-Homogeneous Poisson Process):
+            Chaos Factor: χ(t) = t / T_max
+            Intensity:    λ(t) = λ_0 × exp(α × χ(t))
+            Probability:  P(spawn) = 1 - exp(-λ(t))
+            where λ_0 = 0.02 (base rate), α = 2.5 (escalation exponent)
 
-        Zone selection uses self._rng for deterministic reproducibility.
-        Spawns into currently-clear zones (fire==NONE and patient==NONE).
+        For each totally clear zone, we sample from self._rng.random().
+        Uses the Monolithic Entropy Lock for deterministic reproducibility.
         """
-        if self._step_count not in (5, 10):
-            return
+        # Base parameters
+        lambda_0 = 0.02
+        alpha = 2.5
+
+        # Calculate Chaos Factor and dynamic arrival intensity
+        chaos_factor = self._step_count / max(1, self._max_steps)
+        lambda_t = lambda_0 * math.exp(alpha * chaos_factor)
+        p_spawn = 1.0 - math.exp(-lambda_t)
 
         # Find zones that are currently clear of both fire and medical incidents.
         clear_zones = [
@@ -1336,31 +1409,33 @@ class CrisisManagementEnv(Environment[Action, Observation, EnvironmentState]):
         ]
 
         if not clear_zones:
-            logger.info(
-                "[Step %d] DISASTER SPAWN: No clear zones available, skipping.",
-                self._step_count,
-            )
             return
 
-        # Deterministically select a clear zone.
-        target_zone_id = self._rng.choice(clear_zones)
-        target_zone = self.obs.zones[target_zone_id]
-
-        # Alternate between fire and medical spawns.
-        if self._step_count == 5:
-            target_zone.fire = FireLevel.MEDIUM
-            self._total_incidents += 1
-            logger.warning(
-                "[Step %d] DISASTER SPAWN: New MEDIUM fire in %s!",
-                self._step_count, target_zone_id,
-            )
-        else:  # step 10
-            target_zone.patient = PatientLevel.MODERATE
-            self._total_incidents += 1
-            logger.warning(
-                "[Step %d] DISASTER SPAWN: New MODERATE medical emergency in %s!",
-                self._step_count, target_zone_id,
-            )
+        for zone_id in clear_zones:
+            # Independent roll for each clear zone
+            if self._rng.random() < p_spawn:
+                target_zone = self.obs.zones[zone_id]
+                
+                # Draw hazard type (50% Fire, 50% Medical)
+                is_fire = self._rng.choice([True, False])
+                
+                if is_fire:
+                    # Dynamically draw severity
+                    severity = self._rng.choice([FireLevel.LOW, FireLevel.MEDIUM, FireLevel.HIGH])
+                    target_zone.fire = severity
+                    self._total_incidents += 1
+                    logger.warning(
+                        "[START] [STEP %d] NON-STATIONARY NHPP SPAWN: λ(t)=%.3f triggers %s fire in %s",
+                        self._step_count, lambda_t, severity.value, zone_id
+                    )
+                else:
+                    severity = self._rng.choice([PatientLevel.MODERATE, PatientLevel.CRITICAL])
+                    target_zone.patient = severity
+                    self._total_incidents += 1
+                    logger.warning(
+                        "[START] [STEP %d] NON-STATIONARY NHPP SPAWN: λ(t)=%.3f triggers %s medical emergency in %s",
+                        self._step_count, lambda_t, severity.value, zone_id
+                    )
 
     # ------------------------------------------------------------------
     # Action Hash — Loop Detection Helper (Component 3)

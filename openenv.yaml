@@ -31,11 +31,10 @@ metadata:
   engine: "HF Router (OpenAI-Compatible)"
   mathematical_standout:
     state_space:
-      definition: 'S \in [0, 1]^{16}'
+      definition: 'S \in \mathcal{W} \times (\mathcal{F} \times \mathcal{M} \times \mathcal{T})^{3} \times \mathbb{N}_0^6'
       description: >
-        Normalized vector representing 16 core simulation metrics: 
-        1 Global Weather, 9 Zone fields (3 Zones × Fire, Patient, Traffic), 
-        3 Idle resource pools, and 3 Busy resource pools.
+        Composite discrete state space where W=Weather (3), F=FireLevel (5), M=PatientLevel (4),
+        T=TrafficLevel (3), and 6 pools of idle/busy resources represented by non-negative integers.
     action_space:
       definition: 'A \in T \times U \times Z \times \mathbb{N}_0'
       description: >
@@ -157,13 +156,21 @@ tasks:
       Five zones (Downtown, Suburbs, Industrial, Harbor, Residential) active under
       hurricane conditions with scarce resources (6 fire / 3 ambulances).
       Features inter-zone cascading severity, resource depletion every 4 steps,
-      and mid-episode disaster spawning at steps 5 and 10.
+      and non-stationary disaster spawning via a Non-Homogeneous Poisson Process (NHPP).
     success_threshold: 0.50
     max_steps: 25
 
 grading:
   formula: "(0.50 * success_rate) + (0.30 * efficiency) + (0.20 * resource_usage)"
   success_threshold: 0.5
+  weights:
+    success_rate: 0.50
+    efficiency: 0.30
+    resource_usage: 0.20
+  constants:
+    optimal_reward_per_incident: 8.0
+    worst_reward_per_incident: -9.0
+    max_waste_per_incident: 5.0
 
 runtime:
   type: docker
@@ -185,4 +192,6 @@ dependencies:
   - "openai>=1.0.0"
   - "fastapi>=0.100.0"
   - "uvicorn>=0.22.0"
+  - "python-dotenv>=1.0.0"
+  - "requests>=2.28.0"
   - "openenv-core"

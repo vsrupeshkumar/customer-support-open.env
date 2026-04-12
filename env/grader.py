@@ -99,19 +99,18 @@ Public API
 
 from __future__ import annotations
 
+import os
+import yaml
 import logging
 import math
 from typing import Dict, Any, List, Optional, Tuple
 
+from env.logger import get_engine_logger
+
 # ---------------------------------------------------------------------------
 # Module-level logger
 # ---------------------------------------------------------------------------
-logger = logging.getLogger("crisis_env.grader")
-logger.setLevel(logging.INFO)
-if not logger.handlers:
-    _ch = logging.StreamHandler()
-    _ch.setFormatter(logging.Formatter("[%(levelname)s] GRADER - %(message)s"))
-    logger.addHandler(_ch)
+logger = get_engine_logger("crisis_env.grader")
 
 
 # ---------------------------------------------------------------------------
@@ -119,40 +118,45 @@ if not logger.handlers:
 # ---------------------------------------------------------------------------
 
 class GraderConfig:
-    """Named constants that parameterise the grading formula.
-
-    All values are *mathematically* motivated; see module docstring for
-    derivations.  Changing these will alter every grade. document the reason.
+    """Dynamic constants that parameterise the grading formula.
+    
+    Loads values from openenv.yaml natively so that researchers can
+    tweak difficulty configurations without editing the source code.
     """
-
-    # Weighted formula coefficients (must sum to 1.0)
-    WEIGHT_SUCCESS_RATE: float = 0.50
-    WEIGHT_EFFICIENCY:   float = 0.30
-    WEIGHT_RESOURCE_USE: float = 0.20
-
-    # Efficiency normalisation anchors (see module docstring)
-    OPTIMAL_REWARD_PER_INCIDENT: float  =  8.0  # best achievable per incident
-    WORST_REWARD_PER_INCIDENT:   float  = -9.0  # worst possible per incident
-
-    # Severity-Weighted Waste normalisation anchor (see module docstring).
-    # Represents the theoretical maximum accumulated waste penalty per incident
-    # in a single episode assuming the agent always over-dispatches at the
-    # worst possible severity level (weight=2.0) by the maximum clamped
-    # dispatch count (50 units).  We use a conservative value of 5.0, which
-    # corresponds to roughly 2–3 excess units at the highest (2.0×) weight.
-    # This keeps the denominator proportional to problem difficulty rather than
-    # episode length, ensuring fair comparison across task difficulties.
-    MAX_WASTE_PER_INCIDENT: float = 5.0
+    _yaml_path = os.path.join(os.path.dirname(__file__), "..", "openenv.yaml")
+    
+    try:
+        with open(_yaml_path, 'r') as _f:
+            _config = yaml.safe_load(_f)
+            _grading = _config.get('grading', {})
+            _weights = _grading.get('weights', {})
+            _constants = _grading.get('constants', {})
+        
+        WEIGHT_SUCCESS_RATE = float(_weights.get('success_rate', 0.50))
+        WEIGHT_EFFICIENCY   = float(_weights.get('efficiency', 0.30))
+        WEIGHT_RESOURCE_USE = float(_weights.get('resource_usage', 0.20))
+        
+        OPTIMAL_REWARD_PER_INCIDENT = float(_constants.get('optimal_reward_per_incident', 8.0))
+        WORST_REWARD_PER_INCIDENT   = float(_constants.get('worst_reward_per_incident', -9.0))
+        MAX_WASTE_PER_INCIDENT      = float(_constants.get('max_waste_per_incident', 5.0))
+    except Exception as _e:
+        logger.warning("Failed to load config: %s", _e)
+        WEIGHT_SUCCESS_RATE = 0.50
+        WEIGHT_EFFICIENCY   = 0.30
+        WEIGHT_RESOURCE_USE = 0.20
+        OPTIMAL_REWARD_PER_INCIDENT = 8.0
+        WORST_REWARD_PER_INCIDENT   = -9.0
+        MAX_WASTE_PER_INCIDENT      = 5.0
 
 
 # Sanity-check the weights — fail fast at import time if misconfigured.
-assert abs(
+_total_weight = (
     GraderConfig.WEIGHT_SUCCESS_RATE
     + GraderConfig.WEIGHT_EFFICIENCY
     + GraderConfig.WEIGHT_RESOURCE_USE
-    - 1.0
-) < 1e-9, "GraderConfig weights must sum to exactly 1.0"
-
+)
+if abs(_total_weight - 1.0) >= 1e-9:
+    raise ValueError(f"GraderConfig weights must sum to exactly 1.0, got {_total_weight}")
 
 # ---------------------------------------------------------------------------
 # Private helpers

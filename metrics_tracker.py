@@ -2,7 +2,7 @@ class MetricsTracker:
     def __init__(self):
         self.total_reward = 0.0
         self.hazards_prevented = 0
-        self.cascading_failures = 0
+        self.negative_reward_steps = 0
         self.avg_response_time = 0.0
         self.resource_efficiency = 0.0
         self.action_success_rate = 0.0
@@ -16,7 +16,7 @@ class MetricsTracker:
         # Directive 4: consecutive_failures is backend-private and not in ZoneState.
         # Proxy: a negative reward step indicates an escalation event.
         if reward < 0:
-            self.cascading_failures += 1
+            self.negative_reward_steps += 1
                 
         # Estimate efficiency
         total_resources = (observation.idle_resources.fire_units + observation.busy_resources.fire_units + 
@@ -30,7 +30,7 @@ class MetricsTracker:
             self.hazards_prevented += 1
 
     def get_summary(self):
-        stability = max(0.0, 1.0 - (self.cascading_failures / max(1, self.step_count * 3)))
+        stability = max(0.0, 1.0 - (self.negative_reward_steps / max(1, self.step_count * 3)))
         return {
             "efficiency": self.resource_efficiency if self.step_count > 0 else 0.95,
             "hazards_prevented": self.hazards_prevented,

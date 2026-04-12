@@ -114,50 +114,13 @@ class WeatherCondition(str, Enum):
 class TaskLevel(str, Enum):
     """Named difficulty tiers selectable via ``reset(task_level=...)``.
 
-    These map deterministically to a ``TaskConfig`` object inside
-    ``env.tasks``.
+    Weather modifiers mapping explicitly impacting underlying hazard thresholds
+    and natively dictating cascade probability distributions.
     """
 
     EASY = "easy"
     MEDIUM = "medium"
     HARD = "hard"
-
-
-# ===========================================================================
-# Task Configuration (no magic numbers in the environment loop)
-# ===========================================================================
-
-class TaskConfig(BaseModel):
-    """Fully parameterised configuration for one task difficulty tier.
-
-    All values that would otherwise be hardcoded magic numbers in the
-    environment loop are extracted here.  The environment reads these at
-    ``reset()`` time.
-
-    Attributes:
-        task_id:                 Numeric identifier (1, 2, 3 …).
-        name:                   Human-readable difficulty label.
-        max_steps:               Episode step limit before truncation.
-        cascade_threshold:       Consecutive failures required to trigger
-                                 incident escalation.
-        cooldown_base:           Default deployment cooldown in steps.
-        cooldown_storm_modifier: Additional cooldown steps during STORM.
-        cooldown_hurricane_modifier: Additional cooldown steps during HURRICANE.
-        cooldown_gridlock_modifier: Additional cooldown steps when zone has
-                                 GRIDLOCK traffic.
-        lives_saved_per_amb:     Lives credited per successful ambulance
-                                 resolution (used by metrics, not reward).
-    """
-
-    task_id: int = Field(ge=1)
-    name: str
-    max_steps: int = Field(ge=1)
-    cascade_threshold: int = Field(default=3, ge=1)
-    cooldown_base: int = Field(default=1, ge=1)
-    cooldown_storm_modifier: int = Field(default=1, ge=0)
-    cooldown_hurricane_modifier: int = Field(default=2, ge=0)
-    cooldown_gridlock_modifier: int = Field(default=2, ge=0)
-    lives_saved_per_amb: int = Field(default=18, ge=0)
 
 
 # ===========================================================================
@@ -460,6 +423,10 @@ class Action(BaseModel):
         ),
     )
 
+class PoisonAction(Action):
+    """Sentinel action for tracking deserialization exploits returning secure payloads."""
+    error_msg: str = "Payload Exploit Detected"
+
 
 # ===========================================================================
 # Environment State (full internal snapshot — superset of Observation)
@@ -683,6 +650,17 @@ class Reward(BaseModel):
             + efficiency_bonus
             − time_penalty
             + multi_obj
+
+        BUG-033 Contract
+        ----------------
+        ``total_reward`` in this ledger is the **UNDISCOUNTED** pre-discount
+        reward (the raw arithmetic sum of the 6 sub-components). The POMDP
+        temporal discount factor (γ = 0.99) is applied AFTER ledger construction
+        and returned to the agent as a separate MDP signal.
+
+        DO NOT pass the discounted ``reward`` variable to ``total_reward``.
+        The discount creates a gap of |R| × |1 − γ^(t−1)| that violates
+        ``abs_tol=1e-4`` at any step > 3 with non-trivial reward magnitude.
 
         Returns:
             Self if the identity holds.

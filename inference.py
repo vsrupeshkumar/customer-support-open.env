@@ -248,7 +248,7 @@ triggers a catastrophic terminal penalty. Always verify your totals before respo
 - Weather and traffic conditions affect how many units are required. Learn this from feedback.
 
 ## OUTPUT FORMAT
-Respond with ONLY a valid JSON object — no markdown fences, no explanations, no extra keys.
+Respond with ONLY a valid JSON object — absolutely NO markdown fences (do NOT wrap in ```json)! No explanations, no extra keys.
 
 CRITICAL: The zone IDs to use as keys in "allocations" are provided dynamically in each
 observation's "zones" field. You MUST use the EXACT zone identifiers from the observation
@@ -281,23 +281,31 @@ def _build_fallback_action(obs: "Observation") -> "Action":
     Returns:
         A valid ``Action`` with non-zero allocations for active zones.
     """
-    from env.models import FireLevel, PatientLevel, ZoneDispatch
+    from env.models import FireLevel, PatientLevel, TrafficLevel, ZoneDispatch
 
     allocations = {}
     idle_fire = obs.idle_resources.fire_units
     idle_amb  = obs.idle_resources.ambulances
+    idle_pol  = obs.idle_resources.police
 
     for zone_id, zone_state in obs.zones.items():
         needs_fire  = zone_state.fire  != FireLevel.NONE
         needs_amb   = zone_state.patient not in (PatientLevel.NONE, PatientLevel.FATAL)
+        needs_traf  = zone_state.traffic in (TrafficLevel.HEAVY, TrafficLevel.GRIDLOCK)
+        
         send_fire   = min(1, idle_fire) if needs_fire  else 0
         send_amb    = min(1, idle_amb)  if needs_amb   else 0
+        send_traf   = True if (needs_traf and idle_pol > 0) else False
+        
         idle_fire  -= send_fire
         idle_amb   -= send_amb
+        if send_traf:
+            idle_pol -= 1
+            
         allocations[zone_id] = ZoneDispatch(
             dispatch_fire=send_fire,
             dispatch_ambulance=send_amb,
-            control_traffic=False,
+            control_traffic=send_traf,
         )
 
     return Action(allocations=allocations)
@@ -384,13 +392,22 @@ def extract_and_sanitize_json(llm_string: str, obs: Optional["Observation"] = No
                 "control_traffic": False,
             }
     else:
-        # No obs available — use the standard 3-zone names from tasks.py
-        for zone_id in ("Downtown", "Suburbs", "Industrial"):
-            fallback_allocations[zone_id] = {
-                "dispatch_fire": 1,
-                "dispatch_ambulance": 1,
-                "control_traffic": False,
-            }
+        # BUG-001 FIX: This else-branch is architecturally unreachable.
+        # All callers of extract_and_sanitize_json (→ _call_api → get_action)
+        # always pass a valid Observation object.  If this branch executes,
+        # it means a new call site was added without providing obs — we MUST
+        # fail loudly rather than silently produce wrong zone IDs.
+        #
+        # Previously this hardcoded ("Downtown", "Suburbs", "Industrial"),
+        # which only covered 3 of Task 3's 5 zones (missing Harbor,
+        # Residential).  That caused the Anti-Exploit Guard to fire on
+        # the missing zones (-5.0/zone/step), producing floor scores.
+        raise ValueError(
+            "extract_and_sanitize_json requires a valid Observation for "
+            "context-aware fallback.  All production call sites must pass "
+            "the current obs.  If you see this error, a new caller was "
+            "added without providing the obs parameter."
+        )
     return {"allocations": fallback_allocations}
 
 
@@ -486,6 +503,7 @@ class LLMAgent:
             self._history.append(
                 {"role": "assistant", "content": action.model_dump_json()}
             )
+            self._trim_history()
             return action, None
 
         except Exception as unexpected_err:
@@ -500,6 +518,7 @@ class LLMAgent:
             self._history.append(
                 {"role": "assistant", "content": fallback.model_dump_json()}
             )
+            self._trim_history()
             return fallback, last_error
 
     # ------------------------------------------------------------------
@@ -564,7 +583,7 @@ class LLMAgent:
             except Exception as e:
                 if attempt < max_retries:
                     logger.warning("Step %d | API Error: %s — Retrying %d/%d", step, e, attempt + 1, max_retries)
-                    time.sleep(1.0)
+                    time.sleep(min(2.0, 0.5 * (2 ** attempt)))
                 else:
                     logger.error("[FATAL API ERROR] %s", e)
                     print("Log Warning to stderr: Switch to Static JSON Scenario", file=sys.stderr)

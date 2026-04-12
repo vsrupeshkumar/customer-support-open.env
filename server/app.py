@@ -28,6 +28,7 @@ import os
 import json
 import math
 import random
+import secrets
 import uuid
 from typing import Any, Dict, Optional
 
@@ -43,7 +44,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from env import CrisisManagementEnv
-from env.models import Action, EnvironmentState, Observation, StructuralHallucinationError
+from env.models import Action, EnvironmentState, Observation, StructuralHallucinationError, PoisonAction
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -119,30 +120,49 @@ def _get_session(session_id: Optional[str]) -> CrisisManagementEnv:
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    global _env
-    if _env is None:
+    # Attempt to extract session ID from the invalid payload
+    try:
+        body_bytes = await request.body()
+        data = json.loads(body_bytes) if body_bytes else {}
+        session_id = data.get("session_id")
+    except Exception:
+        session_id = None
+
+    try:
+        env = _get_session(session_id)
+    except HTTPException:
         return JSONResponse(
             status_code=400,
             content={"detail": "Environment not initialised. Call POST /reset first."}
         )
     
-    # Mathematical Penalty Calculus
-    _env._step_count += 1
-    reward = -20.0
-    done = _env._step_count >= _env._max_steps
-    
+    # Process the structural hallucination through the MDP engine properly.
+    # This invokes all POMDP scaling, resource cooldown logic, and penalty processing,
+    # rather than duplicating arithmetic incorrectly in the API layer.
+    action = StructuralHallucinationError("LLM generated an invalid JSON schema.")
+    obs, reward, terminated, truncated, info = env.step(action)
+    done = terminated or truncated
+
     if done:
-        _env._is_done = True
+        success = info.get("resolved", 0) == info.get("total", 0)
+        log_event("END", {"success": str(success).lower(), "score": info.get("score", 0.0)})
         
-    info = {
-        "error_type": "RequestValidationError",
-        "detail": "LLM generated an invalid JSON schema."
-    }
-    
+        # Medium 4.1: Update Global Metrics
+        _global_metrics["episodes_completed"] += 1.0
+        _global_metrics["total_reward_all"] += float(info.get("score", 0.0))
+        if success:
+            _global_metrics["episodes_succeeded"] += 1.0
+            
+        # Auto-cleanup: remove completed sessions (except default)
+        if session_id and session_id != "default":
+            async with _session_lock:
+                _sessions.pop(session_id, None)
+                logger.info("Session %s auto-cleaned after hallucination.", session_id)
+                
     # Force the 200 OK with the exact StepResponse schema
     step_resp = StepResponse(
-        observation=_env.obs.model_dump(mode="json"),
-        reward=reward,
+        observation=obs.model_dump(mode="json"),
+        reward=float(reward),
         done=done,
         info=info
     )
@@ -231,11 +251,11 @@ async def reset(request: Request) -> Dict[str, Any]:
         if seed is not None:
             seed = int(seed)
         else:
-            seed = random.randint(1, 100000)
+            seed = secrets.randbelow(100000) + 1
     except Exception:
         # Fallback if the body is missing or malformed to avoid 422 errors
         task_id = 1
-        seed = random.randint(1, 100000)
+        seed = secrets.randbelow(100000) + 1
         session_id = None
 
     try:
@@ -277,7 +297,6 @@ async def reset(request: Request) -> Dict[str, Any]:
                 entropy -= p * math.log2(p)
                 
         obs_dict = obs.model_dump(mode="json")
-        obs_dict["Environment_Complexity"] = round(entropy, 4)
         obs_dict["session_id"] = session_id
 
         # Log EVENT START
@@ -308,7 +327,7 @@ async def step(request: Request) -> StepResponse:
         action = Action(**data)
     except Exception as e:
         session_id = None
-        action = StructuralHallucinationError(str(e))
+        action = PoisonAction(error_msg=str(e))
 
     env = _get_session(session_id)
 
@@ -318,19 +337,19 @@ async def step(request: Request) -> StepResponse:
 
         logger.info("step session=%s reward=%.4f done=%s", session_id or "default", reward, done)
 
-        if done:
-            success = info.get("resolved", 0) == info.get("total", 0)
-            log_event("END", {"success": str(success).lower(), "score": info.get("score", 0.0)})
-            
-            # Medium 4.1: Update Global Metrics
-            _global_metrics["episodes_completed"] += 1.0
-            _global_metrics["total_reward_all"] += float(info.get("score", 0.0))
-            if success:
-                _global_metrics["episodes_succeeded"] += 1.0
+        async with _session_lock:
+            if done:
+                success = info.get("resolved", 0) == info.get("total", 0)
+                log_event("END", {"success": str(success).lower(), "score": info.get("score", 0.0)})
                 
-            # Auto-cleanup: remove completed sessions (except default)
-            if session_id and session_id != "default":
-                async with _session_lock:
+                # Medium 4.1: Update Global Metrics
+                _global_metrics["episodes_completed"] += 1.0
+                _global_metrics["total_reward_all"] += float(info.get("score", 0.0))
+                if success:
+                    _global_metrics["episodes_succeeded"] += 1.0
+                    
+                # Auto-cleanup: remove completed sessions (except default)
+                if session_id and session_id != "default":
                     _sessions.pop(session_id, None)
                     logger.info("Session %s auto-cleaned after episode end.", session_id)
 
