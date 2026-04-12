@@ -142,7 +142,7 @@ Simultaneous Suburbs fire (MEDIUM/HIGH) and Downtown medical casualties (MODERAT
 Five zones (Downtown, Suburbs, Industrial, **Harbor**, **Residential**) simultaneously active under HURRICANE weather with scarce resources (6 fire, 3 ambulances, 2 police). Features three non-stationary mechanics:
 - **Inter-Zone Cascading**: HIGH+ severity fires spread to neighbors with probability $P = \beta \cdot (\xi_j - \tau) / (\xi_{max} - \tau)$, where $\beta = 0.4$.
 - **Resource Depletion**: Fire units decay every 4 steps: $N_{fire,t} = N_{fire,0} - \lfloor t/4 \rfloor$.
-- **Mid-Episode Crisis Spawning**: New incidents spawn at steps 5 (fire) and 10 (medical) into clear zones. *Note: this means the `success_rate` denominator (`total_incidents`) is strictly non-stationary and adjusts dynamically during the episode timeline.*
+- **Mid-Episode Crisis Spawning**: Disaster spawning follows a Non-Homogeneous Poisson Process (NHPP) where $\lambda(t) = \lambda_0 \times \exp(\alpha \times \chi(t))$ with $\lambda_0=0.02, \alpha=2.5$. *Note: this means the `success_rate` denominator (`total_incidents`) is strictly non-stationary and adjusts dynamically during the episode timeline.*
 
 ## 4.1 Adaptive Curriculum Design
 

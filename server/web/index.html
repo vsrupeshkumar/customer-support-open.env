@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Adaptive Crisis Management Environment — Interactive monitoring dashboard for real-time RL environment inspection and manual dispatch control.">
-    <title>Crisis Management Dashboard</title>
+    <title>Crisis Dashboard | Adaptive Crisis Env</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚨</text></svg>">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -18,7 +19,11 @@
                 </svg>
                 Adaptive Crisis Management Environment
             </h1>
-            <span class="version-badge" id="version-badge">v4.1.0</span>
+            <div class="header-right">
+                <span class="conn-dot" id="conn-dot" title="Server status"></span>
+                <span class="version-badge" id="version-badge">v4.1.0</span>
+                <span class="kbd-hint" title="Keyboard shortcuts: R=Reset, Space=Step, 1/2/3=Task, A=Auto-Play">⌨</span>
+            </div>
         </div>
     </header>
 
@@ -30,9 +35,9 @@
                 <div class="control-group">
                     <label for="task-select">Task Difficulty</label>
                     <div class="btn-group" id="task-select">
-                        <button class="btn-task active" data-task="1" id="btn-task-1">Easy</button>
-                        <button class="btn-task" data-task="2" id="btn-task-2">Medium</button>
-                        <button class="btn-task" data-task="3" id="btn-task-3">Hard</button>
+                        <button class="btn-task active" data-task="1" id="btn-task-1">Easy <kbd>1</kbd></button>
+                        <button class="btn-task" data-task="2" id="btn-task-2">Medium <kbd>2</kbd></button>
+                        <button class="btn-task" data-task="3" id="btn-task-3">Hard <kbd>3</kbd></button>
                     </div>
                 </div>
                 <div class="control-group">
@@ -42,11 +47,17 @@
                 <div class="control-actions">
                     <button class="btn btn-primary" id="btn-reset">
                         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
-                        Reset
+                        Reset <kbd>R</kbd>
                     </button>
                     <button class="btn btn-accent" id="btn-step" disabled>
                         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                        Send Dispatch
+                        Dispatch <kbd>⎵</kbd>
+                    </button>
+                </div>
+                <div class="control-actions">
+                    <button class="btn btn-autoplay" id="btn-autoplay" disabled>
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/><line x1="19" y1="3" x2="19" y2="21"/></svg>
+                        Auto-Play <kbd>A</kbd>
                     </button>
                 </div>
 
@@ -126,6 +137,16 @@
             </section>
         </div>
 
+        <!-- Saliency Attribution Row -->
+        <div class="saliency-row">
+            <section class="card saliency-panel" id="saliency-panel">
+                <h2 class="card-title">Saliency Attribution <span class="card-subtitle">— Dispatch-Requirement Ratio (DRR)</span></h2>
+                <div class="saliency-content" id="saliency-content">
+                    <div class="zone-placeholder">Send a dispatch to see feature attribution analysis</div>
+                </div>
+            </section>
+        </div>
+
         <!-- Bottom Row: Sparkline + Action Log -->
         <div class="bottom-row">
             <section class="card sparkline-panel" id="sparkline-panel">
@@ -148,6 +169,15 @@
             </section>
         </div>
     </main>
+
+    <!-- Episode Summary Modal -->
+    <div class="modal-overlay" id="episode-modal" style="display:none">
+        <div class="modal-card">
+            <h2 class="modal-title">📊 Episode Summary</h2>
+            <div class="modal-body" id="modal-body"></div>
+            <button class="btn btn-primary modal-close" id="modal-close">Close & Reset</button>
+        </div>
+    </div>
 
     <script src="app.js"></script>
 </body>

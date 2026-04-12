@@ -49,7 +49,8 @@ metadata:
 
 interface:
   reset: "Returns initial Observation for a new episode"
-  step:  "Takes Action, returns (Observation, reward, done, info)"
+  step_internal: "5-tuple (Observation, reward, terminated, truncated, info)"
+  step_http: "4-value JSON: {observation, reward, done, info}"
   state: "Returns full EnvironmentState at any point"
 
 # Directive 4 Compliant: Epistemic Strictness enforced. No hidden simulation metadata.
@@ -162,6 +163,7 @@ tasks:
 
 grading:
   formula: "(0.50 * success_rate) + (0.30 * efficiency) + (0.20 * resource_usage)"
+  description: "Weights MUST mathematically sum to 1.0 (enforced at import time)."
   success_threshold: 0.5
   weights:
     success_rate: 0.50

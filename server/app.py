@@ -228,6 +228,32 @@ async def health() -> HealthResponse:
         memory_rss_mb=round(mem_mb, 2),
     )
 
+# ---------------------------------------------------------------------------
+# Root route — Human-friendly landing page redirect
+# ---------------------------------------------------------------------------
+# Returns HTTP 200 (not 307/302) so automated bots see a valid response,
+# while browsers auto-redirect to the interactive dashboard via meta-refresh.
+#
+# Phase 1/2 Safety:
+#   Phase 1 bot sends POST /reset → hits @app.post("/reset"), never this GET.
+#   Phase 2 bot runs inference.py → only calls /reset and /step, never GET /.
+#   This handler ONLY responds to GET / — complete HTTP method isolation.
+# ---------------------------------------------------------------------------
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """Redirect human visitors to the interactive dashboard."""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(
+        '<!DOCTYPE html><html><head>'
+        '<meta charset="utf-8">'
+        '<meta http-equiv="refresh" content="0;url=/web/">'
+        '<title>Adaptive Crisis Management Environment</title>'
+        '</head><body style="background:#0a0a14;color:#e4e4e7;font-family:sans-serif;'
+        'display:flex;align-items:center;justify-content:center;height:100vh">'
+        '<p>Loading <a href="/web/" style="color:#818cf8">Crisis Dashboard</a>...</p>'
+        '</body></html>'
+    )
+
 @app.get("/metrics", tags=["meta"])
 async def metrics() -> Dict[str, Any]:
     """Production episode statistics."""
