@@ -13,7 +13,7 @@ tags:
   - ai-agents
 ---
 
-# Adaptive Crisis Management Environment (OpenEnv)
+# Adaptive Crisis Management Environment [OpenEnv]
 
 > **Submission for the Meta PyTorch OpenEnv Hackathon**
 > This repository implements a mathematically rigorous Partially Observable Markov Decision Process (POMDP) for multi-objective crisis triage.
