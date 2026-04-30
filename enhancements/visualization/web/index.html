@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenEnv Enhanced Telemetry</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="bg-glow"></div>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Adaptive Crisis Management Environment</p>
+      <h1>Parallel Intelligence &amp; Visualization Layer</h1>
+      <p class="subhead">Live telemetry, timeline, and crisis map. Read-only. Zero risk.</p>
+    </div>
+    <div class="controls">
+      <label>
+        Session ID
+        <input id="session-id" placeholder="default" />
+      </label>
+      <button id="apply-session">Apply</button>
+      <div class="status" id="status-pill">Waiting...</div>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="card">
+      <h2>State Snapshot</h2>
+      <div class="keyline"></div>
+      <div class="summary" id="summary"></div>
+      <pre id="state-json" class="code"></pre>
+    </section>
+
+    <section class="card">
+      <h2>Reward Lens</h2>
+      <div class="keyline"></div>
+      <div id="reward-breakdown" class="pill-grid"></div>
+      <div class="timeline" id="timeline"></div>
+    </section>
+
+    <section class="card map-card">
+      <h2>Crisis Map</h2>
+      <div class="keyline"></div>
+      <div id="map-grid" class="map-grid"></div>
+    </section>
+
+    <section class="card">
+      <h2>Global Metrics</h2>
+      <div class="keyline"></div>
+      <div id="global-metrics" class="pill-grid"></div>
+      <pre id="step-json" class="code"></pre>
+    </section>
+  </main>
+
+  <footer class="footer">Polling every 2 seconds. This UI does not modify simulation state.</footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

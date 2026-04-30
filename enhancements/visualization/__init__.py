@@ -1,0 +1,1 @@
+"""Visualization assets for enhancements."""

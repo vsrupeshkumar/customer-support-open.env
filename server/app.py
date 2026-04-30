@@ -474,6 +474,18 @@ if _WEB_DIR.exists():
 else:
     logger.info("Web dashboard directory not found at %s — skipping mount.", _WEB_DIR)
 
+# ---------------------------------------------------------------------------
+# Optional enhancement layer (additive, zero-risk when disabled)
+# ---------------------------------------------------------------------------
+try:
+    from enhancements.config.flags import ENABLE_ENHANCEMENTS
+except Exception:
+    ENABLE_ENHANCEMENTS = False
+
+if ENABLE_ENHANCEMENTS:
+    from enhancements.bootstrap import init_enhancements
+    init_enhancements(app)
+
 def main():
     import uvicorn
     uvicorn.run("server.app:app", host="0.0.0.0", port=7860, log_level="info")

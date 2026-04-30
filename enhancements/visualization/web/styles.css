@@ -1,0 +1,243 @@
+:root {
+  --bg: #0f0f14;
+  --bg-secondary: #141822;
+  --surface: #1b2230;
+  --accent: #35d0ba;
+  --accent-2: #ffb347;
+  --accent-3: #ff6b6b;
+  --text: #f5f7ff;
+  --muted: #a2a8bf;
+  --border: rgba(255, 255, 255, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  color: var(--text);
+  background: radial-gradient(1200px 600px at 20% -10%, #1f2a44 0%, transparent 60%),
+    radial-gradient(900px 500px at 80% 10%, #2a1c44 0%, transparent 55%),
+    var(--bg);
+  min-height: 100vh;
+}
+
+.bg-glow {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(600px 300px at 50% 20%, rgba(53, 208, 186, 0.2), transparent 70%);
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: 2.5rem 4vw 1.5rem;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 0 0 0.5rem 0;
+}
+
+h1 {
+  font-size: clamp(2rem, 3vw, 3rem);
+  margin: 0 0 0.5rem 0;
+}
+
+.subhead {
+  color: var(--muted);
+  margin: 0;
+}
+
+.controls {
+  display: grid;
+  gap: 0.75rem;
+  background: var(--surface);
+  padding: 1rem;
+  border-radius: 1rem;
+  border: 1px solid var(--border);
+  min-width: 240px;
+}
+
+.controls label {
+  font-size: 0.8rem;
+  color: var(--muted);
+  display: grid;
+  gap: 0.4rem;
+}
+
+.controls input {
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.controls button {
+  background: var(--accent);
+  border: none;
+  color: #0b1114;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.5rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.controls button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px rgba(53, 208, 186, 0.2);
+}
+
+.status {
+  padding: 0.4rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(53, 208, 186, 0.15);
+  color: var(--accent);
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+.grid {
+  display: grid;
+  gap: 1.5rem;
+  padding: 0 4vw 3rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 1.2rem;
+  padding: 1.25rem;
+  position: relative;
+  overflow: hidden;
+  animation: fadeUp 0.6s ease both;
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.card h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.keyline {
+  height: 2px;
+  width: 100%;
+  margin: 0.75rem 0 1rem;
+  background: linear-gradient(90deg, var(--accent), transparent);
+}
+
+.code {
+  background: var(--bg-secondary);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+  max-height: 240px;
+  overflow: auto;
+  color: var(--muted);
+}
+
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.pill-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.pill {
+  background: var(--bg-secondary);
+  border-radius: 0.75rem;
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+}
+
+.pill .label {
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+.map-card {
+  grid-column: span 2;
+}
+
+.map-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.zone {
+  border-radius: 0.9rem;
+  padding: 0.8rem;
+  color: #0a0a0a;
+  min-height: 90px;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: transform 0.2s ease;
+}
+
+.zone small {
+  font-weight: 400;
+  color: rgba(10, 10, 10, 0.7);
+}
+
+.zone:hover {
+  transform: translateY(-2px);
+}
+
+.timeline {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.timeline-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--bg-secondary);
+  border-radius: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.8rem;
+}
+
+.footer {
+  text-align: center;
+  color: var(--muted);
+  padding-bottom: 2rem;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 900px) {
+  .hero {
+    flex-direction: column;
+  }
+  .map-card {
+    grid-column: span 1;
+  }
+}
