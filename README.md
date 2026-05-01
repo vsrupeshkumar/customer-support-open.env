@@ -244,5 +244,5 @@ This script serves as the **Official Audit** that satisfies the Meta Hackathon C
 *   Verify live connectivity of the `/reset` endpoint.
 *   Perform a baseline spec-compliance check without triggering accidental Git commits or pushes.
 
-**Evaluator Note**: For the most rigorous evaluation, we recommend running `./validate-submission.sh <HF_SPACE_URL>`. 
+**Evaluator Note**: For the most rigorous evaluation, we recommend running in `./validate-submission.sh <HF_SPACE_URL>`. 
 
