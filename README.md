@@ -23,7 +23,7 @@ tags:
 * **PRNG Isolation:** Eliminates global state leaks via isolated `random.Random` monolith lock instantiated exclusively upon initialization.
 * **Structural Fault Tolerance:** Graceful 422 to 200 recovery for LLM hallucination handling.
 
-**[🟢 Live Hugging Face Space](https://huggingface.co/spaces/Anbu-00001/adaptive-crisis-env)**
+**[🟢 Live Hugging Face Space] (https://huggingface.co/spaces/Anbu-00001/adaptive-crisis-env)**
 
 | Component | Technology | Specification |
 | :--- | :--- | :--- |
