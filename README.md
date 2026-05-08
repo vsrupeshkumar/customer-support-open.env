@@ -74,7 +74,7 @@ graph LR
     style C fill:#ffebee,stroke:#b71c1c,stroke-width:2px
 ```
 
-## 2. System Architecture: The FastAPI-Docker Bridge
+## 2. System Architecture: The FastAPI Docker Bridge
 
 To strictly adhere to OpenEnv Phase 1 validation (the "Guillotine" checks), absolute statelessness and reproducible container executions are required natively.
 
